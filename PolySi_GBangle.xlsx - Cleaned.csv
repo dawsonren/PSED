@@ -1,0 +1,17 @@
+CSL,Roughness,Nanotwinning,Thermal Resistance,Other
+Σ3,1,0,0,"right straight, smooth (cusp-shaped)"
+Σ3,1,0,0.4,left non-smooth facet (cusp-shaped)
+Σ3,0,0,0.43,
+Σ3,0,0,0.17,
+Σ3,0,0,0.3,
+Σ27,0,0,0.33,
+Σ27,0,0,0.34,
+Σ3,0,0,0.55,
+Σ27,0,0,0.49,
+Σ27,0,0,0.6,
+Σ3,0,1,1.76,
+Random,0,1,0.52,
+Σ3,0,1,2.32,
+Σ3,0,0,0.35,
+Σ9,0,0,0.58,
+Σ9,0,0,0.46,
