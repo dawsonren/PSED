@@ -1,0 +1,19 @@
+# create interactive partition to compile
+srun --partition=gengpu --gres=gpu:1 --time=01:00:00 --pty --account <allocation ID> bash -i
+
+# load modules, these are the most recent and worked for me
+module load gcc/12.4.0-gcc-8.5.0
+module load cuda/12.6.2-gcc-12.4.0
+module load git
+# git clone the repogit clone https://github.com/brucefan1983/GPUMD
+
+# run Makefile in GPUMD
+cd GPUMD 
+make
+
+# QUIT out of the interactive Quest partition
+# THEN copy the executables into your home directory, I put it in ~/exec
+cp [the gpumd executable inside src] [where you want it to go]
+
+# put ~/exec in your $PATH by adding this line to .bashrc (probably right below conda)
+export PATH="$HOME/exec:$PATH"
