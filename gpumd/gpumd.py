@@ -15,7 +15,7 @@ from ase.io import read, write
 from ase.build import bulk
 from ase.visualize import view
 from ase.visualize.plot import plot_atoms
-from ase.filters import ExpCellFilter
+from ase.filters import FrechetCellFilter
 from ase.md.bussi import Bussi
 from ase.optimize import BFGS
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
@@ -55,7 +55,7 @@ ON_A100     = info["has_a100"]
 ON_H100     = info["has_h100"]
 
 # parameters for relaxation/annealing
-TEMP_START = 10
+TEMP_START = 10000
 TEMP_END = 300
 
 RELAX_MD_PARAMS = [
@@ -150,14 +150,21 @@ if DEBUG or not ON_GPU_NODE:
 
 if not os.path.exists(RELAXED_FILE):
     print("Relaxing Si unit cell with CPU calculator...")
-    # BUG: code doesn't have enough atoms when I set cubic=False
-    # and get error "Cannot use triclinic box with only 1 target pressure component."
-    # if I set constant_cell=False.
-    # However, in the original code, these issues were not present.
     struct = bulk('Si', a=5.431, cubic=True)
     struct.calc = cpu_calc
 
-    relax_structure(struct, constant_cell=True)
+    # Wrap structure in FrechetCellFilter so BFGS can optimize both
+    # atomic positions AND the cell volume simultaneously.
+    # hydrostatic_strain=True: only allow isotropic (uniform) cell scaling,
+    # which preserves the cubic angles while finding the correct lattice parameter.
+    filtered = FrechetCellFilter(struct, hydrostatic_strain=True)
+
+    optimizer = BFGS(filtered, logfile='relax_unit_cell.log')
+    optimizer.run(fmax=0.01)  # converge forces < 0.01 eV/Å and stresses < 0.01 eV/Å³
+
+    # Sanity check: print relaxed lattice parameter (should be ~5.43 Å for Si)
+    a_relaxed = struct.cell[0, 0]
+    print(f"Relaxed lattice parameter: a = {a_relaxed:.4f} Å, should be around 5.43 Å")
 
     write(RELAXED_FILE, struct)
 
