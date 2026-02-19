@@ -107,13 +107,13 @@ else:
 
 # set up calculators
 # the CPU calculator is to relax the structure
-# the GPU calculator is for the NEMD simulation
+# the GPU calculator is for the equilibration (annealing step) and RNEMD simulation
 
 cpu_calc = CPUNEP(NEP_FILE)
 gpu_calc = GPUNEP(
     NEP_FILE,
     command=GPUMD_EXEC_LOCATION,
-    gpu_identifier_index=0,
+    gpu_identifier_index=0, # NOTE: we only use one GPU
     directory=RUN_DIR
 )
 
@@ -211,6 +211,8 @@ if not os.path.exists(EQUILIBRATED_FILE):
         plt.savefig("Initial_RDF.png")
 
     write(EQUILIBRATED_FILE, atoms)
+
+quit()
 
 ###
 ### Setup for RNEMD
