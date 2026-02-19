@@ -37,11 +37,12 @@ NET_ID = "djr2473"
 DEBUG = True
 # set path to current file, NEP_FILE should be in same directory as this script
 os.chdir(os.path.dirname(__file__))
-NEP_FILE = "Si_GAP_nep.txt"
+NEP_FILE = "Si_GAP_nep.txt" # I believe this is the 'xml_label=GAP_2017_6_17_60_4_3_56_165' from quippy.potential import Potential
 # NOTE: if you followed my setup instructions, this is fine, otherwise change
 GPUMD_EXEC_LOCATION = f"/home/{NET_ID}/exec/gpumd"
-# location of GPUMD outputs
-RUN_DIR = "rNEMD_test"
+# location of equilibrated outputs
+EQUILIBRATE_RUN_DIR = "equilibrate_outputs"
+RNEMD_RUN_DIR = "rnemd_outputs"
 # name of file for relaxed unit cell atom locations
 RELAXED_FILE = "relax.traj"
 # name of file for equilibrated full system
@@ -59,12 +60,12 @@ TEMP_START = 10000
 TEMP_END = 300
 
 RELAX_MD_PARAMS = [
-    ('dump_exyz', [1000, 1]), # [write out positions every 100 steps, write out velocities too]
-    ('dump_position', 1000),
+    ('dump_exyz', [10000, 1]), # [write out positions every 10000 steps, write out velocities too]
+    ('dump_position', 10000), # write out positions every 10000 steps
     ('time_step', 1), # 1fs
     # ('ensemble', ['nvt_nhc', temp_1, temp_2, 100]),
     ('ensemble', ['npt_scr', TEMP_START, TEMP_END, 200, 0, 100, 1000]), # [start_temp, end_temp, tau_t (coupling constant), pressure, bulk modulus, tau_p (coupling constant)]
-    ('run', 200000) # run for n steps, 4000 atoms for 200,000 steps ~ 5 mins on home GPU
+    ('run', 10000) # TODO: change back to 200000 # run for n steps, 4000 atoms for 200,000 steps ~ 5 mins on home GPU
 ]
 
 # parameters for reverse non-equilibrium MD (to measure kappa)
@@ -110,11 +111,17 @@ else:
 # the GPU calculator is for the equilibration (annealing step) and RNEMD simulation
 
 cpu_calc = CPUNEP(NEP_FILE)
-gpu_calc = GPUNEP(
+equilibrate_gpu_calc = GPUNEP(
     NEP_FILE,
     command=GPUMD_EXEC_LOCATION,
     gpu_identifier_index=0, # NOTE: we only use one GPU
-    directory=RUN_DIR
+    directory=EQUILIBRATE_RUN_DIR
+)
+rnemd_gpu_calc = GPUNEP(
+    NEP_FILE,
+    command=GPUMD_EXEC_LOCATION,
+    gpu_identifier_index=0, # NOTE: we only use one GPU
+    directory=RNEMD_RUN_DIR
 )
 
 ###
@@ -162,15 +169,23 @@ if not os.path.exists(RELAXED_FILE):
     optimizer = BFGS(filtered, logfile='relax_unit_cell.log')
     optimizer.run(fmax=0.01)  # converge forces < 0.01 eV/Å and stresses < 0.01 eV/Å³
 
+    # Snap cell to perfect diagonal to remove any numerical off-diagonal
+    # residuals from the optimizer. GPUMD will reject even tiny triclinic
+    # components when using a single pressure component in NPT.
+    clean_cell = np.diag(np.diag(struct.cell[:]))
+    struct.set_cell(clean_cell, scale_atoms=True)
+
     # Sanity check: print relaxed lattice parameter (should be ~5.43 Å for Si)
     a_relaxed = struct.cell[0, 0]
     print(f"Relaxed lattice parameter: a = {a_relaxed:.4f} Å, should be around 5.43 Å")
 
     write(RELAXED_FILE, struct)
+else:
+    print(f"{RELAXED_FILE} already exists, skipping...")
 
 atoms = read(RELAXED_FILE)
 # sanity check: should still be grid aligned
-assert np.allclose(atoms.cell, np.diag(np.diag(atoms.cell)), atol=1e-6)
+assert np.allclose(atoms.cell, np.diag(np.diag(atoms.cell)), atol=1e-12)
 
 ###
 ### Equilibrate Structure
@@ -183,21 +198,23 @@ if not ON_GPU_NODE:
 if not os.path.exists(EQUILIBRATED_FILE):
     # Read relaxed atomic positions, attach calculator
     atoms = read(RELAXED_FILE).repeat(BOX_SIZE)
-    gpu_calc.set_atoms(atoms)
-    atoms.calc = gpu_calc
+    equilibrate_gpu_calc.set_atoms(atoms)
+    atoms.calc = equilibrate_gpu_calc
 
     # NOTE: should the number of atoms should be # of unit cells * # of atoms / unit cell?
     assert len(atoms) == np.prod(BOX_SIZE) * 8
 
     # make sure movie.xyz is removed before running relaxation MD
-    if os.path.exists(os.path.join(RUN_DIR, 'movie.xyz')):
-        os.remove(os.path.join(RUN_DIR, 'movie.xyz'))
+    if os.path.exists(os.path.join(EQUILIBRATE_RUN_DIR, 'movie.xyz')):
+        os.remove(os.path.join(EQUILIBRATE_RUN_DIR, 'movie.xyz'))
 
     print("Relaxing structure with GPU calculator...")
-    atoms = gpu_calc.run_custom_md(RELAX_MD_PARAMS, return_last_atoms=True)
+    atoms = equilibrate_gpu_calc.run_custom_md(RELAX_MD_PARAMS, return_last_atoms=True)
     print("Finished relaxing structure.")
 
+    print("DEBUG: ", DEBUG)
     if DEBUG:
+        print("Debugging...")
         fig, ax = plt.subplots()
         plot_atoms(atoms, ax)
         plt.savefig("Initial_Atom_Positions.png")
@@ -211,6 +228,8 @@ if not os.path.exists(EQUILIBRATED_FILE):
         plt.savefig("Initial_RDF.png")
 
     write(EQUILIBRATED_FILE, atoms)
+else:
+    print(f"{EQUILIBRATED_FILE} already exists, skipping...")
 
 quit()
 
@@ -255,19 +274,19 @@ for ind, cycle in enumerate(range(N_CYCLES)):
     print(f"Starting cycle {ind}...")
 
     # Set calculator - have to redefine it everytime because calorine is weird
-    gpu_calc = GPUNEP(
+    rnemd_gpu_calc = GPUNEP(
         NEP_FILE, 
         command=GPUMD_EXEC_LOCATION,
         gpu_identifier_index=0,
-        directory=RUN_DIR,
+        directory=RNEMD_RUN_DIR,
         atoms=atoms
     )
 
     # run simulation for steps_per_cycle
-    atoms = gpu_calc.run_custom_md(RNEMD_PARAMS, return_last_atoms=True)
+    atoms = rnemd_gpu_calc.run_custom_md(RNEMD_PARAMS, return_last_atoms=True)
 
     # weird quirk of calorine, does not return atomic velocities, so have to assign them from an output file
-    vels = pd.read_csv(RUN_DIR + '/velocity.out', sep = ' ', header = None).iloc[-len(atoms):, :]
+    vels = pd.read_csv(RNEMD_RUN_DIR + '/velocity.out', sep = ' ', header = None).iloc[-len(atoms):, :]
     atoms.set_velocities(vels / 0.098) # another quirk, velocity units are mismatched between the two packages (see ase.units module)
     print(atoms.get_temperature()) # sanity check
     
@@ -297,6 +316,8 @@ if DEBUG:
 ###
 ### Data Visualization from RNEMD run
 ###
+
+quit()
 
 # BUG: generated by ChatGPT, I have no idea if this is right
 # but I'm not sure how rNEMD.log is generated, since my outputs didn't include it

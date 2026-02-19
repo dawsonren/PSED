@@ -19,10 +19,10 @@ GPU information:
 
 number of GPUs = 1
 Device id:                   0
-    Device name:             NVIDIA A100-PCIE-40GB
-    Compute capability:      8.0
-    Amount of global memory: 39.4945 GB
-    Number of SMs:           108
+    Device name:             NVIDIA H100 80GB HBM3
+    Compute capability:      9.0
+    Amount of global memory: 79.1896 GB
+    Number of SMs:           132
 
 ---------------------------------------------------------------
 Started running GPUMD.
@@ -38,18 +38,18 @@ Use periodic boundary conditions along x.
 Use periodic boundary conditions along y.
 Use periodic boundary conditions along z.
 Box matrix h = [a, b, c] is
-    1.0877278000e+02    0.0000000000e+00    0.0000000000e+00
-    0.0000000000e+00    2.7193199000e+01    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    2.7193199000e+01
+    1.0915637460e+02    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    2.7289093651e+01    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    2.7289093651e+01
 Inverse box matrix g = inv(h) is
-    9.1934765297e-03    0.0000000000e+00    0.0000000000e+00
-    0.0000000000e+00    3.6773900710e-02    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    3.6773900710e-02
-Specify initial velocities here.
+    9.1611690442e-03    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.6644676177e-02    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    3.6644676177e-02
+Do not specify initial velocities here.
 Have no grouping method.
 There is only one atom type.
     4000 atoms of type 0.
-Initialized velocities with data in model.xyz.
+Initialized velocities with default T = 300 K.
 
 ---------------------------------------------------------------
 Finished initializing positions and related parameters.
@@ -78,38 +78,35 @@ Use the NEP3 potential with 1 atom type.
     number of neural network parameters = 3951.
     number of descriptor parameters = 242.
     total number of parameters = 4193.
-Dump position.
-    every 400 steps.
-Dump velocity.
-    every 400 steps.
-Dump thermo every 400 steps.
 Dump extended XYZ.
-    every 400 steps.
+    every 10000 steps.
     with velocity data.
-Time step for this run is 0.4 fs.
+Dump position.
+    every 10000 steps.
+Time step for this run is 1 fs.
 Use NPT ensemble for this run.
     choose the SCR method.
-    initial temperature is 300 K.
+    initial temperature is 10000 K.
     final temperature is 300 K.
-    tau_T is 20 time_step.
+    tau_T is 200 time_step.
     isotropic pressure is 0 GPa.
     bulk modulus is 100 GPa.
-    tau_p is 200 time_step.
-Run 400 steps.
-    40 steps completed.
-    80 steps completed.
-    120 steps completed.
-    160 steps completed.
-    200 steps completed.
-    240 steps completed.
-    280 steps completed.
-    320 steps completed.
-    360 steps completed.
-    400 steps completed.
+    tau_p is 1000 time_step.
+Run 10000 steps.
+    1000 steps completed.
+    2000 steps completed.
+    3000 steps completed.
+    4000 steps completed.
+    5000 steps completed.
+    6000 steps completed.
+    7000 steps completed.
+    8000 steps completed.
+    9000 steps completed.
+    10000 steps completed.
 
 ---------------------------------------------------------------
-Time used for this run = 0.854472 second.
-Speed of this run = 1.8725e+06 atom*step/second.
+Time used for this run = 15.6508 second.
+Speed of this run = 2.55577e+06 atom*step/second.
 ---------------------------------------------------------------
 
 
@@ -119,7 +116,7 @@ Finished executing the commands in run.in.
 
 
 ---------------------------------------------------------------
-Time used = 0.873957 s.
+Time used = 15.811969 s.
 ---------------------------------------------------------------
 
 
