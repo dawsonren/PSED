@@ -23,6 +23,7 @@ rnemd:
   n_cycles: 50
   n_equilibration_cycles: 10
   scale_repeat: 4          # repeat along Y and Z for cross-section convergence
+  n_runs: 3                # independent rNEMD simulations per structure (for uncertainty)
 
 # GB specifications
 grain_boundaries:
