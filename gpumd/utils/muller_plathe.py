@@ -30,14 +30,10 @@ def bin_atoms(bins, scaled_x_positions):
     bins (np.array): scaled x positions designating each bin.
     scaled_x_positions (np.array): scaled x positions for every atom in the simulation box 
     """
-    
-    # -------------------------------- #
-    # assign atoms to bins
-    atom_bin_assignments = np.digitize(scaled_x_positions, bins) # places atoms in bins based on index - len(atoms), 1 = first bin, 2 = second...
-
-    # Find a way to vectorize this
-    bins_containing_atom_indices = np.empty(np.unique(atom_bin_assignments).size, dtype = 'object')
-    for ind, search_val in enumerate(np.unique(atom_bin_assignments)):
-        bins_containing_atom_indices[ind] = np.where(atom_bin_assignments == search_val)[0]
-
+    atom_bin_assignments = np.digitize(scaled_x_positions, bins)
+    bins_containing_atom_indices = np.empty(len(bins) - 1, dtype='object')
+    for i in range(len(bins) - 1):
+        bins_containing_atom_indices[i] = np.where(
+            atom_bin_assignments == i + 1
+        )[0]
     return bins_containing_atom_indices

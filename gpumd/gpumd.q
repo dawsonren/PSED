@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=p33174
 #SBATCH --partition=gengpu
-#SBATCH --time=01:00:00       
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --mem=4
@@ -15,5 +15,14 @@ module load openblas/0.3.28-gcc-12.4.0
 
 source /home/${USER}/.bashrc
 source activate chem
+
+# Config file controls the entire pipeline (GB generation + RNEMD).
+# Change this to run a different experiment:
+CONFIG=${1:-configs/small_box.yaml}
+
 cd gpumd
-/home/djr2473/.conda/envs/chem/bin/python gpumd.py
+PYTHON=/home/djr2473/.conda/envs/chem/bin/python
+
+echo "Running config: $CONFIG"
+$PYTHON gb_generation/generate_gbs.py --config "$CONFIG"
+$PYTHON rnemd/run_rnemd.py --config "$CONFIG"

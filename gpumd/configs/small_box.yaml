@@ -1,0 +1,37 @@
+# paths (relative to gpumd/ root)
+nep_model: potentials/Si_GAP_nep.txt
+gpumd_exec: /home/djr2473/exec/gpumd
+
+# GB generation parameters
+gb_generation:
+  uc_a: 3                # aimsgb unit cells — controls x-length (heat transport direction)
+  uc_b: 3                # aimsgb unit cells — controls x-length
+  n_runs: 5
+  t_start: 1400.0        # K — annealing start temperature
+  t_end: 300.0            # K — annealing end temperature
+  total_time_ps: 150.0
+  timestep_fs: 1.0
+  relax_fmax: 0.01
+  t_coup: 100.0           # thermostat coupling (in timesteps)
+
+# RNEMD parameters
+rnemd:
+  temperature_k: 675      # K — must be > Debye temp for classical phonon transport
+  nbins: 16               # must be even (symmetric PBC paths)
+  steps_per_cycle: 400
+  timestep_fs: 0.4
+  n_cycles: 50
+  n_equilibration_cycles: 10
+  scale_repeat: 4          # repeat along Y and Z for cross-section convergence
+
+# GB specifications
+grain_boundaries:
+  - sigma: 5
+    miller: [2, -1, 0]
+    axis: [0, 0, 1]
+  # - sigma: 9
+  #   miller: [-1, -2, 1]
+  #   axis: [1, 1, 0]
+  # - sigma: 3
+  #   miller: [1, -1, 2]
+  #   axis: [1, 1, 0]
