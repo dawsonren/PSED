@@ -9,13 +9,14 @@ gpumd_exec: /home/djr2473/exec/gpumd
 gb_generation:
   uc_a: 8
   uc_b: 8
-  n_runs: 5
+  n_runs: 3
   t_start: 1400.0
   t_end: 300.0
   total_time_ps: 150.0
   timestep_fs: 1.0
   relax_fmax: 0.01
   t_coup: 100.0
+  scale_repeat: 4          # repeat along Y and Z before annealing (cross-section convergence)
 
 # RNEMD parameters
 rnemd:
@@ -25,8 +26,18 @@ rnemd:
   timestep_fs: 0.4
   n_cycles: 50
   n_equilibration_cycles: 10
-  scale_repeat: 4
   n_runs: 3                # independent rNEMD simulations per structure (for uncertainty)
+
+# ML descriptor parameters
+ml:
+  bond_cutoff: 3.0          # Å — neighbour cutoff for bond angle/length descriptors
+  rdf_cutoff: 10.0          # Å — cutoff for radial distribution function
+  rdf_nbins: 200            # bins for g(r)
+  soap_cutoff: 6.0          # Å — SOAP cutoff radius
+  soap_n_max: 9             # SOAP radial basis functions
+  soap_l_max: 9             # SOAP max angular degree
+  dihedral_nbins: 36        # bins for dihedral angle entropy (10° per bin)
+  gb_dist_thresholds: [5.0, 10.0]  # Å — distance from GB plane for atom subsets
 
 # GB specifications
 grain_boundaries:

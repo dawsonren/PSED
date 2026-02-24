@@ -4,7 +4,7 @@
 #SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --mem=4
+#SBATCH --mem=64
 #SBATCH --job-name=gpumd
 
 #------------------------------------------------------------------------------

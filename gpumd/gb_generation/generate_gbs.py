@@ -50,7 +50,7 @@ load_dotenv()
 from aimsgb import GrainBoundary, Grain
 from ase.io import read, write
 from ase.visualize.plot import plot_atoms
-from ase.optimize import BFGS
+from ase.optimize import LBFGS
 
 from calorine.calculators import GPUNEP, CPUNEP
 
@@ -88,6 +88,7 @@ gb_cfg = config["gb_generation"]
 UC_A           = gb_cfg["uc_a"]
 UC_B           = gb_cfg["uc_b"]
 N_RUNS         = gb_cfg["n_runs"]
+SCALE_REPEAT   = int(gb_cfg["scale_repeat"])
 T_START        = float(gb_cfg["t_start"])
 T_END          = float(gb_cfg["t_end"])
 TOTAL_TIME_PS  = float(gb_cfg["total_time_ps"])
@@ -186,7 +187,7 @@ def final_bfgs_relaxation(atoms, logfile="relax.log"):
     """
     atoms.calc = CPUNEP(NEP_MODEL_FILE)
 
-    optimizer = BFGS(atoms, logfile=logfile)
+    optimizer = LBFGS(atoms, logfile=logfile)
     optimizer.run(fmax=RELAX_FMAX)
 
     energy = atoms.get_potential_energy()
@@ -284,13 +285,18 @@ def process_gb(sigma, miller, axis, s_input):
     print(f"\n{'='*60}")
     print(f"Processing: {label}  (config: {CONFIG_NAME})")
     print(f"  sigma={sigma}, miller={miller}, axis={axis}")
-    print(f"  uc_a={UC_A}, uc_b={UC_B}")
+    print(f"  uc_a={UC_A}, uc_b={UC_B}, scale_repeat={SCALE_REPEAT}")
     print(f"  n_runs={N_RUNS}, T: {T_START}K -> {T_END}K over {TOTAL_TIME_PS}ps")
     print(f"{'='*60}")
 
-    # Build initial GB structure
+    # Build initial GB structure and repeat along Y/Z for cross-section convergence.
+    # This must happen before annealing so GPUMD sees a thick enough cell in all
+    # periodic directions (NEP requires thickness >= 2 * cutoff = 10 Å).
     gb_atoms, gb = build_gb_atoms(s_input, sigma, miller, axis)
-    print(f"  Built GB: {len(gb_atoms)} atoms")
+    gb_atoms = gb_atoms.repeat((SCALE_REPEAT, SCALE_REPEAT, 1))
+    gb_atoms.wrap()
+    print(f"  Built GB: {len(gb_atoms)} atoms after {SCALE_REPEAT}x Y/Z repeat "
+          f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)")
 
     # Save initial structure for reference
     write(os.path.join(out_dir, "initial.traj"), gb_atoms)

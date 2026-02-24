@@ -24,7 +24,7 @@ Pipeline:
 
 TBR derivation
 --------------
-Heat flux:  J = Σ(m/2)(v_hot² − v_cold²) / (2·A·t)
+Heat flux:  J = Σ(m/2)(v_hot² - v_cold²) / (2·A·t)
   - Factor of 2 in denominator: heat flows both directions in periodic box.
   - v_hot, v_cold are the swapped atom speeds from swap_velocities (ASE units).
   - m = Si atomic mass.
@@ -59,7 +59,7 @@ from ase.visualize.plot import plot_atoms
 from calorine.calculators import GPUNEP
 
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.muller_plathe import swap_velocities, bin_atoms
 from utils.rnemd_stats import check_steady_state, aggregate_run_results, format_result_summary
 
@@ -109,7 +109,6 @@ STEPS_PER_CYCLE  = rnemd_cfg["steps_per_cycle"]
 TIMESTEP_FS      = rnemd_cfg["timestep_fs"]
 N_CYCLES         = rnemd_cfg["n_cycles"]
 N_EQUILIBRATION_CYCLES = rnemd_cfg["n_equilibration_cycles"]
-SCALE_REPEAT     = rnemd_cfg["scale_repeat"]
 N_RUNS           = rnemd_cfg.get("n_runs", 3)
 
 # Si atomic mass in amu (used for energy flux calculation)
@@ -128,11 +127,19 @@ def run_one_cycle(atoms, run_dir):
     be read from velocity.out.  The division by ~0.098 converts from GPUMD's
     internal velocity units (Å/fs) to ASE's internal units (Å/t_ASE where
     t_ASE ≈ 10.18 fs ≈ sqrt(amu·Å²/eV)).  The exact factor is ase.units.fs.
+
+    NVT (nvt_nhc) is used rather than NPT for two reasons:
+      1. GPUMD's NPT requires the cell to be in upper-triangular form
+         (a along +x, b in xy-plane, cz > 0).  The cell from aimsgb does not
+         satisfy this and causes a silent GPUMD crash.
+      2. RNEMD should be run at constant volume so bin positions do not drift.
+         The structure is already at equilibrium volume from the BFGS relaxation.
     """
     md_params = [
+        ("dump_position", STEPS_PER_CYCLE),
         ("dump_velocity", STEPS_PER_CYCLE),
         ("time_step", TIMESTEP_FS),
-        ("ensemble", ["npt_scr", TEMPERATURE_K, TEMPERATURE_K, 20, 0, 100, 200]),
+        ("ensemble", ["nvt_nhc", TEMPERATURE_K, TEMPERATURE_K, 100]),
         ("run", STEPS_PER_CYCLE),
     ]
 
@@ -353,15 +360,19 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
     """
     os.makedirs(out_dir, exist_ok=True)
 
-    # Repeat cell for cross-section convergence (once; shared across runs)
-    atoms = atoms.repeat((1, SCALE_REPEAT, SCALE_REPEAT))
-    print(f"  Repeated cell: {len(atoms)} atoms, "
-          f"cell = {atoms.cell[0,0]:.1f} x {atoms.cell[1,1]:.1f} x {atoms.cell[2,2]:.1f} Å")
+    # Cell geometry: aimsgb with direction=0 stacks grains along ASE cell axis 2.
+    # Axes 0 and 1 are the (repeated) cross-section directions.
+    stacking_len = np.linalg.norm(atoms.cell[2])          # Å, GB-normal direction
+    cross_section = np.linalg.norm(                        # Å², area perpendicular to stacking
+        np.cross(atoms.cell[0], atoms.cell[1])
+    )
+    print(f"  Structure: {len(atoms)} atoms, "
+          f"stacking length = {stacking_len:.1f} Å, "
+          f"cross-section = {cross_section:.1f} Å²")
 
-    # Bin edges and centers (same for all runs — positions don't change)
+    # Bin edges and centers along the stacking direction (axis 2)
     bins = np.linspace(0, 1, NBINS + 1)
-    bin_centers = (bins[:-1] + bins[1:]) / 2.0 * atoms.cell[0, 0]
-    cross_section = atoms.cell[1, 1] * atoms.cell[2, 2]  # Å²
+    bin_centers = (bins[:-1] + bins[1:]) / 2.0 * stacking_len  # Å
     total_time_fs = N_CYCLES * STEPS_PER_CYCLE * TIMESTEP_FS
 
     all_run_results = []
@@ -377,8 +388,8 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         MaxwellBoltzmannDistribution(run_atoms, temperature_K=TEMPERATURE_K)
         print(f"    Initial T = {run_atoms.get_temperature():.1f} K")
 
-        # Bin atoms along x
-        scaled_x = [a.scaled_position[0] for a in run_atoms]
+        # Bin atoms along the stacking direction (ASE cell axis 2)
+        scaled_x = [a.scaled_position[2] for a in run_atoms]
         binned = bin_atoms(bins, scaled_x)
 
         # Save bin visualization
@@ -499,7 +510,7 @@ def process_gb_type(gb_label_str):
     print(f"\n{'='*60}")
     print(f"Processing {gb_label_str}  (config: {CONFIG_NAME})")
     print(f"  using run_{best_run_index} (lowest E = {best_energy:.4f} eV)")
-    print(f"  scale_repeat={SCALE_REPEAT}, n_runs={N_RUNS}")
+    print(f"  n_runs={N_RUNS}")
     print(f"{'='*60}")
 
     out_base = os.path.join(RNEMD_RESULTS_DIR, gb_label_str)
