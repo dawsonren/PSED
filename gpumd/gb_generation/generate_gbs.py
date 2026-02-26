@@ -9,8 +9,8 @@ Usage:
 Pipeline:
 1. Load GB specifications and run parameters from a unified YAML config.
 2. Build GB structure with aimsgb (GrainBoundary + Grain.stack_grains).
-   The x-length is controlled by uc_a + uc_b (no cell repetition here;
-   Y/Z repetition for cross-section convergence happens in run_rnemd.py).
+   The x-length is controlled by uc_a + uc_b, y/z scale is controlled
+   by SCALE_REPEAT parameter
 3. Anneal with GPUMD: cooling ramp from t_start down to t_end over
    total_time_ps, using nvt_bdp thermostat.
 4. Final BFGS relaxation (CPU NEP, BFGS) to remove residual forces.
@@ -94,7 +94,7 @@ T_END          = float(gb_cfg["t_end"])
 TOTAL_TIME_PS  = float(gb_cfg["total_time_ps"])
 TIMESTEP_FS    = float(gb_cfg["timestep_fs"])
 RELAX_FMAX     = float(gb_cfg["relax_fmax"])
-T_COUP         = float(gb_cfg["t_coup"])
+TAU_T         = float(gb_cfg["tau_t"])
 
 # Derived
 N_STEPS        = int(TOTAL_TIME_PS * 1000.0 / TIMESTEP_FS)
@@ -141,7 +141,7 @@ def cool_with_gpumd(atoms, run_dir):
     Run a GPUMD nvt_bdp cooling ramp: T_START -> T_END over TOTAL_TIME_PS.
 
     nvt_bdp is the Bussi-Donadio-Parrinello stochastic velocity-rescaling
-    thermostat. T_COUP (in timesteps) sets the coupling timescale (recommended
+    thermostat. TAU_T (in timesteps) sets the coupling timescale (recommended
     to be 100 x timestep in GPUMD). Too small causes unphysical velocity kicks;
     too large and the temperature lags the ramp target.
     """
@@ -165,7 +165,7 @@ def cool_with_gpumd(atoms, run_dir):
     md_parameters = [
         ("velocity",  float(T_START)),
         ("time_step", float(TIMESTEP_FS)),
-        ("ensemble",  ["nvt_bdp", float(T_START), float(T_END), float(T_COUP)]),
+        ("ensemble",  ["npt_scr", float(T_START), float(T_END), float(TAU_T)]),
         ("dump_thermo",   int(THERMO_INTERVAL)),
         ("dump_position", int(DUMP_INTERVAL)),
         ("run", int(N_STEPS)),
@@ -196,13 +196,13 @@ def final_bfgs_relaxation(atoms, logfile="relax.log"):
 
 def plot_temperature_trace(run_dir, label, run_index):
     """
-    Plot actual vs target temperature from thermo.out to validate T_COUP.
+    Plot actual vs target temperature from thermo.out to validate TAU_T.
 
     What to look for:
       - GOOD: actual temperature tracks the ramp smoothly with small fluctuations
-      - BAD (T_COUP too small): rapid high-frequency oscillations around the target —
+      - BAD (TAU_T too small): rapid high-frequency oscillations around the target —
         the thermostat is overcorrecting every few steps, artificially disrupting dynamics
-      - BAD (T_COUP too large): actual temperature lags far behind the ramp target —
+      - BAD (TAU_T too large): actual temperature lags far behind the ramp target —
         the thermostat barely intervenes and the system drifts freely
 
     thermo.out columns (GPUMD format):
@@ -233,7 +233,7 @@ def plot_temperature_trace(run_dir, label, run_index):
     fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
     plt.suptitle(
         f"{label} — run {run_index} temperature trace\n"
-        f"T_COUP={T_COUP:.0f} steps ({T_COUP * TIMESTEP_FS / 1000:.1f} ps coupling)",
+        f"TAU_T={TAU_T:.0f} steps ({TAU_T * TIMESTEP_FS / 1000:.1f} ps coupling)",
         fontsize=10,
     )
 
@@ -253,7 +253,7 @@ def plot_temperature_trace(run_dir, label, run_index):
     axes[1].set_ylabel("T_actual − T_target [K]")
     axes[1].set_xlabel("Time [ps]")
     axes[1].set_title(
-        "Residual — oscillations → T_COUP too small; persistent drift → T_COUP too large",
+        "Residual — oscillations → TAU_T too small; persistent drift → TAU_T too large",
         fontsize=8,
     )
 
@@ -266,7 +266,7 @@ def plot_temperature_trace(run_dir, label, run_index):
     # Print a quick numeric summary so you can assess without opening the plot
     rms_residual = np.sqrt(np.mean(residual**2))
     max_residual = np.max(np.abs(residual))
-    print(f"    T_COUP validation: RMS residual={rms_residual:.1f} K, "
+    print(f"    TAU_T validation: RMS residual={rms_residual:.1f} K, "
           f"max |residual|={max_residual:.1f} K "
           f"(RMS < ~50 K is generally acceptable for annealing)")
 

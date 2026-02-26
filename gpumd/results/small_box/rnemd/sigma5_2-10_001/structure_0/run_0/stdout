@@ -19,9 +19,9 @@ GPU information:
 
 number of GPUs = 1
 Device id:                   0
-    Device name:             NVIDIA A100-PCIE-40GB
+    Device name:             NVIDIA A100-SXM4-80GB
     Compute capability:      8.0
-    Amount of global memory: 39.4945 GB
+    Amount of global memory: 79.2517 GB
     Number of SMs:           108
 
 ---------------------------------------------------------------
@@ -82,10 +82,7 @@ Dump position.
     every 400 steps.
 Dump velocity.
     every 400 steps.
+Dump extended XYZ.
+    every 400 steps.
+    with velocity data.
 Time step for this run is 0.4 fs.
-Use NVT ensemble for this run.
-    choose the Nose-Hoover chain method.
-    initial temperature is 675 K.
-    final temperature is 675 K.
-    tau_T is 100 time_step.
-Run 400 steps.

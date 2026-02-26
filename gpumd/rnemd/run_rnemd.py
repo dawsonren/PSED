@@ -11,14 +11,13 @@ Pipeline:
 2. Scan results/<config_name>/gb_generation/ for GB types. For each GB type,
    select the lowest-energy run from summary.csv.
 3. For the selected structure:
-   a. Repeat the cell along Y/Z (scale_repeat) for cross-section convergence.
-   b. Run N_RUNS independent rNEMD simulations, each with fresh MB velocities:
+   a. Run N_RUNS independent rNEMD simulations, each with fresh MB velocities:
       i.   Equilibrate for n_equilibration_cycles using NPT (no swapping).
       ii.  Run n_cycles of Müller-Plathe rNEMD: each cycle runs steps_per_cycle
            MD steps, then swaps the hottest atom in the cold slab with the
            coldest atom in the hot slab (via utils/muller_plathe.py).
       iii. Record bin temperatures and swapped velocity magnitudes each cycle.
-   c. After all cycles, compute per-run TBR, kappa, and heat flux J.
+   b. After all cycles, compute per-run TBR, kappa, and heat flux J.
 4. Aggregate results across runs (mean ± std) for uncertainty estimation.
 5. Write per-run summary.csv and aggregate.csv per GB type.
 
@@ -40,6 +39,7 @@ import os
 import csv
 import argparse
 import glob
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +55,11 @@ from ase import units
 from ase.io import read, write
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.visualize.plot import plot_atoms
+from ase.geometry.cell import cell_to_cellpar, cellpar_to_cell
+
+# NOTE: suppress warnings from re-initializing calorine (weird quirk that Dawson Smith noticed)
+# see note in run_one_cycle()
+warnings.filterwarnings("ignore", message=".*is not empty.*", module="calorine")
 
 from calorine.calculators import GPUNEP
 
@@ -110,6 +115,10 @@ TIMESTEP_FS      = rnemd_cfg["timestep_fs"]
 N_CYCLES         = rnemd_cfg["n_cycles"]
 N_EQUILIBRATION_CYCLES = rnemd_cfg["n_equilibration_cycles"]
 N_RUNS           = rnemd_cfg.get("n_runs", 3)
+TAU_T            = rnemd_cfg["tau_t"]
+PRESSURE_GPA     = rnemd_cfg["pressure_gpa"]
+BULK_MODULUS_GPA = rnemd_cfg["bulk_modulus_gpa"]
+TAU_P            = rnemd_cfg["tau_p"]
 
 # Si atomic mass in amu (used for energy flux calculation)
 M_SI_AMU = 28.085
@@ -127,23 +136,17 @@ def run_one_cycle(atoms, run_dir):
     be read from velocity.out.  The division by ~0.098 converts from GPUMD's
     internal velocity units (Å/fs) to ASE's internal units (Å/t_ASE where
     t_ASE ≈ 10.18 fs ≈ sqrt(amu·Å²/eV)).  The exact factor is ase.units.fs.
-
-    NVT (nvt_nhc) is used rather than NPT for two reasons:
-      1. GPUMD's NPT requires the cell to be in upper-triangular form
-         (a along +x, b in xy-plane, cz > 0).  The cell from aimsgb does not
-         satisfy this and causes a silent GPUMD crash.
-      2. RNEMD should be run at constant volume so bin positions do not drift.
-         The structure is already at equilibrium volume from the BFGS relaxation.
     """
     md_params = [
         ("dump_position", STEPS_PER_CYCLE),
         ("dump_velocity", STEPS_PER_CYCLE),
+        ('dump_exyz', [STEPS_PER_CYCLE, 1]),
         ("time_step", TIMESTEP_FS),
-        ("ensemble", ["nvt_nhc", TEMPERATURE_K, TEMPERATURE_K, 100]),
+        ("ensemble", ['npt_scr', TEMPERATURE_K, TEMPERATURE_K, TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]),
         ("run", STEPS_PER_CYCLE),
     ]
 
-    # Must re-create calculator each cycle (calorine limitation)
+    # NOTE: Must re-create calculator each cycle (calorine limitation)
     calc = GPUNEP(
         NEP_MODEL_FILE,
         command=GPUMD_EXEC,
@@ -507,6 +510,11 @@ def process_gb_type(gb_label_str):
         return
 
     atoms = read(traj_path)
+    # # GPUMD requires upper-triangular cell (a along x, b in xy-plane, cz>0).
+    # # cellpar_to_cell preserves fractional coords: axis 2 stays the stacking direction.
+    # params = cell_to_cellpar(atoms.cell)
+    # atoms.set_cell(cellpar_to_cell(params), scale_atoms=True)
+    # atoms.wrap()
     print(f"\n{'='*60}")
     print(f"Processing {gb_label_str}  (config: {CONFIG_NAME})")
     print(f"  using run_{best_run_index} (lowest E = {best_energy:.4f} eV)")

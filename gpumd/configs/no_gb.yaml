@@ -1,4 +1,4 @@
-# Create a small crystal with GBs
+# Create a bulk crystal with the same size as small_box.yaml
 
 # paths (relative to gpumd/ root)
 nep_model: potentials/Si_GAP_nep.txt
@@ -55,13 +55,8 @@ ml:
   gb_dist_thresholds: [5.0, 10.0]  # Å — distance from GB plane for atom subsets
 
 # GB specifications
+# NOTE: -1 means generate no GB
 grain_boundaries:
-  - sigma: 5
-    miller: [2, -1, 0]
-    axis: [0, 0, 1]
-  # - sigma: 9
-  #   miller: [-1, -2, 1]
-  #   axis: [1, 1, 0]
-  # - sigma: 3
-  #   miller: [1, -1, 2]
-  #   axis: [1, 1, 0]
+  - sigma: -1
+    miller: -1
+    axis: -1
