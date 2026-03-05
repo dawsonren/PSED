@@ -10,16 +10,15 @@ Pipeline:
 1. Load GB specifications and run parameters from a unified YAML config.
 2. Build GB structure with aimsgb (GrainBoundary + Grain.stack_grains).
    The x-length is controlled by uc_a + uc_b, y/z scale is controlled
-   by SCALE_REPEAT parameter
+   by SCALE_REPEAT parameter that is specific to eat GB config entry.
 3. Anneal with GPUMD: cooling ramp from t_start down to t_end over
-   total_time_ps, using nvt_bdp thermostat.
-4. Final BFGS relaxation (CPU NEP, BFGS) to remove residual forces.
-5. Repeat steps 3-4 n_runs times with different random initial velocities.
+   total_time_ps, using npt_scr thermostat.
+4. Repeat step 3 n_runs times with different random initial velocities.
    ALL relaxed structures are saved (not just the lowest-energy one) because
    each metastable structure is a genuine local minimum and valid ML training
    data — different runs produce distinct atomic arrangements at the interface
    consistent with the same crystallographic misorientation.
-6. A summary.csv records energies per run.
+5. A summary.csv records energies per run.
 
 File outputs:
     results/<config_name>/gb_generation/
@@ -50,9 +49,9 @@ load_dotenv()
 from aimsgb import GrainBoundary, Grain
 from ase.io import read, write
 from ase.visualize.plot import plot_atoms
-from ase.optimize import LBFGS
+from ase.geometry.cell import cell_to_cellpar, cellpar_to_cell
 
-from calorine.calculators import GPUNEP, CPUNEP
+from calorine.calculators import GPUNEP
 
 # ---------------------------------------------------------------------------
 # CLI and configuration
@@ -85,25 +84,29 @@ GPUMD_EXEC     = os.path.expandvars(config["gpumd_exec"])
 RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
 
 gb_cfg = config["gb_generation"]
-UC_A           = gb_cfg["uc_a"]
-UC_B           = gb_cfg["uc_b"]
-N_RUNS         = gb_cfg["n_runs"]
-SCALE_REPEAT   = int(gb_cfg["scale_repeat"])
+UC_A           = int(gb_cfg["uc_a"])
+UC_B           = int(gb_cfg["uc_b"])
+N_RUNS         = int(gb_cfg["n_runs"])
 T_START        = float(gb_cfg["t_start"])
 T_END          = float(gb_cfg["t_end"])
 TOTAL_TIME_PS  = float(gb_cfg["total_time_ps"])
 TIMESTEP_FS    = float(gb_cfg["timestep_fs"])
-RELAX_FMAX     = float(gb_cfg["relax_fmax"])
-TAU_T         = float(gb_cfg["tau_t"])
+TAU_T          = float(gb_cfg["tau_t"])
+PRESSURE_GPA     = float(gb_cfg["pressure_gpa"])
+BULK_MODULUS_GPA = float(gb_cfg["bulk_modulus_gpa"])
+TAU_P            = float(gb_cfg["tau_p"])
 
 # Derived
 N_STEPS        = int(TOTAL_TIME_PS * 1000.0 / TIMESTEP_FS)
 THERMO_INTERVAL = 5000    # write thermo every 5 ps — enough to verify T tracking
 DUMP_INTERVAL   = 50000   # write positions every 50 ps — file size control
 
-GB_LIST = [
-    (entry["sigma"], tuple(entry["miller"]), tuple(entry["axis"]))
-    for entry in config["grain_boundaries"]
+_raw_gbs = config["grain_boundaries"]
+# sigma: -1 in the config signals a bulk-only run (no grain boundary)
+NO_GB_MODE = len(_raw_gbs) == 1 and _raw_gbs[0]["sigma"] == -1
+GB_LIST = [] if NO_GB_MODE else [
+    (entry["sigma"], tuple(entry["miller"]), tuple(entry["axis"]), entry["scale_repeat"])
+    for entry in _raw_gbs
 ]
 
 # ---------------------------------------------------------------------------
@@ -120,11 +123,10 @@ def gb_label(sigma, miller, axis):
 def build_gb_atoms(s_input, sigma, miller, axis):
     """
     Build a periodic bicrystal using aimsgb and return an ASE Atoms object.
-    The GB plane is perpendicular to the x-axis (direction=0 by default in
-    aimsgb), which aligns with the heat transport direction for RNEMD.
+    The cross-sectional plane between crystals is perpendicular to the
+    z-axis in aimsgb
 
-    The x-length is determined by uc_a + uc_b. No cell repetition is done
-    here; Y/Z repetition for cross-section convergence happens in run_rnemd.py.
+    The z-length is determined by uc_a + uc_b.
     """
     gb = GrainBoundary(axis, sigma, miller, s_input, uc_a=UC_A, uc_b=UC_B)
     structure = Grain.stack_grains(gb.grain_a, gb.grain_b, direction=gb.direction)
@@ -138,10 +140,9 @@ def build_gb_atoms(s_input, sigma, miller, axis):
 
 def cool_with_gpumd(atoms, run_dir):
     """
-    Run a GPUMD nvt_bdp cooling ramp: T_START -> T_END over TOTAL_TIME_PS.
+    Run a GPUMD npt_scr cooling ramp: T_START -> T_END over TOTAL_TIME_PS.
 
-    nvt_bdp is the Bussi-Donadio-Parrinello stochastic velocity-rescaling
-    thermostat. TAU_T (in timesteps) sets the coupling timescale (recommended
+    TAU_T (in timesteps) sets the coupling timescale (recommended
     to be 100 x timestep in GPUMD). Too small causes unphysical velocity kicks;
     too large and the temperature lags the ramp target.
     """
@@ -162,36 +163,23 @@ def cool_with_gpumd(atoms, run_dir):
     atoms = atoms.copy()
     atoms.calc = calc
 
-    md_parameters = [
-        ("velocity",  float(T_START)),
-        ("time_step", float(TIMESTEP_FS)),
-        ("ensemble",  ["npt_scr", float(T_START), float(T_END), float(TAU_T)]),
-        ("dump_thermo",   int(THERMO_INTERVAL)),
-        ("dump_position", int(DUMP_INTERVAL)),
-        ("run", int(N_STEPS)),
+    md_params = [
+        ("velocity",  T_START),
+        ("time_step", TIMESTEP_FS),
+        ("ensemble",  ["npt_scr", T_START, T_END, TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]),
+        ("dump_thermo", THERMO_INTERVAL),
+        ("dump_position", DUMP_INTERVAL),
+        ("run", N_STEPS),
     ]
 
     cooled_atoms = calc.run_custom_md(
-        md_parameters,
+        md_params,
         return_last_atoms=True
     )
     cooled_atoms.pbc = atoms.pbc
     cooled_atoms.wrap()
 
     return cooled_atoms
-
-
-def final_bfgs_relaxation(atoms, logfile="relax.log"):
-    """
-    Relax atomic positions at constant cell shape using BFGS + CPUNEP.
-    """
-    atoms.calc = CPUNEP(NEP_MODEL_FILE)
-
-    optimizer = LBFGS(atoms, logfile=logfile)
-    optimizer.run(fmax=RELAX_FMAX)
-
-    energy = atoms.get_potential_energy()
-    return atoms, energy
 
 
 def plot_temperature_trace(run_dir, label, run_index):
@@ -250,7 +238,7 @@ def plot_temperature_trace(run_dir, label, run_index):
     residual = thermo["T"].values - target_T
     axes[1].plot(time_ps, residual, color="darkorange", linewidth=0.8)
     axes[1].axhline(0, color="black", linewidth=0.5, linestyle="--")
-    axes[1].set_ylabel("T_actual − T_target [K]")
+    axes[1].set_ylabel("T_actual - T_target [K]")
     axes[1].set_xlabel("Time [ps]")
     axes[1].set_title(
         "Residual — oscillations → TAU_T too small; persistent drift → TAU_T too large",
@@ -271,12 +259,127 @@ def plot_temperature_trace(run_dir, label, run_index):
           f"(RMS < ~50 K is generally acceptable for annealing)")
 
 
+def plot_pressure_trace(run_dir, label, run_index):
+    """
+    Plot actual vs target pressure from thermo.out to validate TAU_T.
+
+    What to look for:
+      - GOOD: actual pressure remains constant around target PRESSURE_GPA with small fluctuations
+      - BAD (TAU_T too small): rapid high-frequency oscillations around the target —
+        the thermostat is overcorrecting every few steps, artificially disrupting dynamics
+      - BAD (TAU_T too large): actual temperature lags far behind the target —
+        the thermostat barely intervenes and the system drifts freely
+
+    thermo.out columns (GPUMD format):
+        T  K  U  Pxx Pyy Pzz Pyz Pxz Pxy  ax ay az  bx by bz  cx cy cz
+    The pressure is calculated as the average of the normal components: P = -(Pxx + Pyy + Pzz) / 3
+    (negative sign because GPUMD defines pressure as -1 * virial).
+    """
+    thermo_path = os.path.join(run_dir, "thermo.out")
+    if not os.path.exists(thermo_path):
+        print(f"    Warning: thermo.out not found in {run_dir}, skipping T plot.")
+        return
+
+    import pandas as pd
+    thermo = pd.read_csv(
+        thermo_path,
+        sep=r"\s+",
+        header=None,
+        names=["T", "K", "U", "Pxx", "Pyy", "Pzz", "Pyz", "Pxz", "Pxy",
+               "ax", "ay", "az", "bx", "by", "bz", "cx", "cy", "cz"],
+    )
+
+    n_thermo_steps = len(thermo)
+    # Time axis: each thermo row corresponds to THERMO_INTERVAL MD steps
+    time_ps = np.arange(n_thermo_steps) * THERMO_INTERVAL * TIMESTEP_FS / 1000.0
+
+    # Reconstruct the linear cooling ramp as the target
+    target_P = np.full(n_thermo_steps, PRESSURE_GPA)
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    plt.suptitle(
+        f"{label} — run {run_index} pressure trace\n"
+        f"TAU_P={TAU_P:.0f} steps ({TAU_P * TIMESTEP_FS / 1000:.1f} ps coupling)",
+        fontsize=10,
+    )
+
+    # Top panel: actual vs target temperature
+    axes[0].plot(time_ps, thermo["T"], color="gold", linewidth=0.8, label="Actual T")
+    axes[0].plot(time_ps, target_P, color="steelblue", linewidth=1.5,
+                 linestyle="--", label="Target pressure")
+    axes[0].set_ylabel("Pressure [GPa]")
+    axes[0].legend(fontsize=8)
+    axes[0].set_title("Actual vs target — should track smoothly with no large oscillations or lag",
+                      fontsize=8)
+
+    # Bottom panel: residual (actual - target) — makes coupling quality obvious
+    residual = thermo["T"].values - target_P
+    axes[1].plot(time_ps, residual, color="gold", linewidth=0.8)
+    axes[1].axhline(0, color="black", linewidth=0.5, linestyle="--")
+    axes[1].set_ylabel("P_actual - P_target [GPa]")
+    axes[1].set_xlabel("Time [ps]")
+    axes[1].set_title(
+        "Residual — oscillations → TAU_P too small; persistent drift → TAU_P too large",
+        fontsize=8,
+    )
+
+    plt.tight_layout()
+    out_path = os.path.join(run_dir, "pressure_trace.png")
+    plt.savefig(out_path)
+    plt.close()
+    print(f"    Pressure trace saved to {out_path}")
+
+    # Print a quick numeric summary so you can assess without opening the plot
+    rms_residual = np.sqrt(np.mean(residual**2))
+    max_residual = np.max(np.abs(residual))
+    print(f"    TAU_P validation: RMS residual={rms_residual:.1f} K, "
+          f"max |residual|={max_residual:.1f} K "
+          f"(RMS < ~1 GPa is generally acceptable for annealing)")
+
+# ---------------------------------------------------------------------------
+# Bulk Si (no-GB) helper
+# ---------------------------------------------------------------------------
+
+BULK_SI_LABEL = "bulk_si"
+
+
+def build_bulk_atoms(s_input, scale_repeat):
+    """
+    Build a bulk Si supercell by repeating the unit cell with
+    (SCALE_REPEAT, SCALE_REPEAT, UC_A + UC_B) to match the approximate size
+    of a GB cell: x/y cross-section set by SCALE_REPEAT, z stacking length
+    set by UC_A + UC_B unit cells.
+    """
+    atoms = s_input.to_ase_atoms()
+
+    # Convert to upper-triangular cell (required by GPUMD). For cubic Si this
+    # produces a diagonal (orthogonal) cell, compatible with a scalar pressure.
+    # Without this the cell from aimsgb may be in a non-upper-triangular
+    # orientation and GPUMD raises "Cannot use triclinic box with only 1
+    # target pressure component".
+    params = cell_to_cellpar(atoms.cell)
+    atoms.set_cell(cellpar_to_cell(params), scale_atoms=True)
+    atoms.wrap()
+
+    atoms = atoms.repeat((scale_repeat, scale_repeat, UC_A + UC_B))
+    atoms.pbc = True
+    atoms.wrap()
+    return atoms
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
-def process_gb(sigma, miller, axis, s_input):
-    label   = gb_label(sigma, miller, axis)
+def process_gb(sigma, miller, axis, scale_repeat, s_input):
+    # sigma == -1 signals a bulk-only run (no grain boundary)
+    no_gb = (sigma == -1)
+
+    if no_gb:
+        label = BULK_SI_LABEL
+    else:
+        label = gb_label(sigma, miller, axis)
+
     out_dir = os.path.join(RESULTS_DIR, label)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -284,19 +387,29 @@ def process_gb(sigma, miller, axis, s_input):
 
     print(f"\n{'='*60}")
     print(f"Processing: {label}  (config: {CONFIG_NAME})")
-    print(f"  sigma={sigma}, miller={miller}, axis={axis}")
-    print(f"  uc_a={UC_A}, uc_b={UC_B}, scale_repeat={SCALE_REPEAT}")
+    if no_gb:
+        print(f"  Bulk Si — no grain boundary")
+        print(f"  scale_repeat={scale_repeat}, uc_a+uc_b={UC_A + UC_B}")
+    else:
+        print(f"  sigma={sigma}, miller={miller}, axis={axis}")
+        print(f"  uc_a={UC_A}, uc_b={UC_B}, scale_repeat={scale_repeat}")
     print(f"  n_runs={N_RUNS}, T: {T_START}K -> {T_END}K over {TOTAL_TIME_PS}ps")
     print(f"{'='*60}")
 
-    # Build initial GB structure and repeat along Y/Z for cross-section convergence.
-    # This must happen before annealing so GPUMD sees a thick enough cell in all
-    # periodic directions (NEP requires thickness >= 2 * cutoff = 10 Å).
-    gb_atoms, gb = build_gb_atoms(s_input, sigma, miller, axis)
-    gb_atoms = gb_atoms.repeat((SCALE_REPEAT, SCALE_REPEAT, 1))
-    gb_atoms.wrap()
-    print(f"  Built GB: {len(gb_atoms)} atoms after {SCALE_REPEAT}x Y/Z repeat "
-          f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)")
+    # Build initial structure
+    if no_gb:
+        gb_atoms = build_bulk_atoms(s_input)
+        print(f"  Built bulk Si: {len(gb_atoms)} atoms "
+              f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)")
+    else:
+        # Build initial GB structure and repeat along X/Y for cross-section convergence.
+        # This must happen before annealing so GPUMD sees a thick enough cell in all
+        # periodic directions (NEP requires thickness >= 2 * cutoff = 10 Å).
+        gb_atoms, gb = build_gb_atoms(s_input, sigma, miller, axis)
+        gb_atoms = gb_atoms.repeat((scale_repeat, scale_repeat, 1))
+        gb_atoms.wrap()
+        print(f"  Built GB: {len(gb_atoms)} atoms after {scale_repeat}x X/Y repeat "
+              f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)")
 
     # Save initial structure for reference
     write(os.path.join(out_dir, "initial.traj"), gb_atoms)
@@ -318,31 +431,29 @@ def process_gb(sigma, miller, axis, s_input):
             run_dir = os.path.join(out_dir, f"run_{i}")
             start_atoms = gb_atoms.copy()
 
-            # Step 1: Anneal with GPUMD
+            # Anneal with GPUMD
             cooled_atoms = cool_with_gpumd(start_atoms, run_dir=run_dir)
-            print(f"    Cooling done.")
+            energy = cooled_atoms.get_potential_energy()
+            print(f"    Cooling done. Energy = {energy:.6f} eV")
             plot_temperature_trace(run_dir, label, i)
-
-            # Step 2: Final BFGS relaxation at constant cell (CPU NEP)
-            relax_log = os.path.join(run_dir, "relax.log")
-            relaxed_atoms, energy = final_bfgs_relaxation(cooled_atoms, logfile=relax_log)
-            print(f"    Relaxed. Energy = {energy:.6f} eV")
+            plot_pressure_trace(run_dir, label, i)
 
             # Attach metadata to atoms.info so downstream scripts can read it back
-            relaxed_atoms.info["sigma"]      = sigma
-            relaxed_atoms.info["miller"]     = list(miller)
-            relaxed_atoms.info["axis"]       = list(axis)
-            relaxed_atoms.info["run_index"]  = i
-            relaxed_atoms.info["energy_ev"]  = energy
-            relaxed_atoms.info["gb_label"]   = label
+            if not no_gb:
+                cooled_atoms.info["sigma"]  = sigma
+                cooled_atoms.info["miller"] = list(miller)
+                cooled_atoms.info["axis"]   = list(axis)
+            cooled_atoms.info["run_index"]  = i
+            cooled_atoms.info["energy_ev"]  = energy
+            cooled_atoms.info["gb_label"]   = label
 
             # Write structure to per-run traj file
-            write(os.path.join(run_dir, "structure.traj"), relaxed_atoms)
+            write(os.path.join(run_dir, "structure.traj"), cooled_atoms)
             writer.writerow([i, energy])
 
             # Save per-run visualization
             fig, ax = plt.subplots(figsize=(8, 4))
-            plot_atoms(relaxed_atoms, ax)
+            plot_atoms(cooled_atoms, ax)
             ax.set_title(f"{label} run {i} — E={energy:.4f} eV")
             plt.tight_layout()
             plt.savefig(os.path.join(run_dir, "relaxed.png"))
@@ -374,10 +485,14 @@ def main():
     print(f"Fetching Si structure from Materials Project (mp-149)...")
     s_input = Grain.from_mp_id("mp-149")
 
-    for (sigma, miller, axis) in GB_LIST:
-        process_gb(sigma, miller, axis, s_input)
+    if NO_GB_MODE:
+        scale_repeat = _raw_gbs[0]["scale_repeat"]  # still read scale_repeat for bulk runs
+        process_gb(-1, None, None, s_input)
+    else:
+        for (sigma, miller, axis, scale_repeat) in GB_LIST:
+            process_gb(sigma, miller, axis, scale_repeat, s_input)
 
-    print("\nAll grain boundaries processed.")
+    print("\nAll structures processed.")
 
 
 if __name__ == "__main__":

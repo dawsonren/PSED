@@ -12,8 +12,7 @@ Pipeline:
    select the lowest-energy run from summary.csv.
 3. For the selected structure:
    a. Run N_RUNS independent rNEMD simulations, each with fresh MB velocities:
-      i.   Equilibrate for n_equilibration_cycles using NPT (no swapping).
-      ii.  Run n_cycles of Müller-Plathe rNEMD: each cycle runs steps_per_cycle
+      i.   Run n_cycles of Müller-Plathe rNEMD: each cycle runs steps_per_cycle
            MD steps, then swaps the hottest atom in the cold slab with the
            coldest atom in the hot slab (via utils/muller_plathe.py).
       iii. Record bin temperatures and swapped velocity magnitudes each cycle.
@@ -50,6 +49,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import Normalize
+from tqdm import tqdm
 
 from ase import units
 from ase.io import read, write
@@ -106,19 +106,18 @@ GB_RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
 RNEMD_RESULTS_DIR = str(GPUMD_ROOT / "results" / CONFIG_NAME / "rnemd")
 
 rnemd_cfg = config["rnemd"]
-TEMPERATURE_K    = rnemd_cfg["temperature_k"]
-NBINS            = rnemd_cfg["nbins"]
+NBINS            = int(rnemd_cfg["nbins"])
 COLD_BIN         = NBINS // 4
 HOT_BIN          = 3 * NBINS // 4
-STEPS_PER_CYCLE  = rnemd_cfg["steps_per_cycle"]
-TIMESTEP_FS      = rnemd_cfg["timestep_fs"]
-N_CYCLES         = rnemd_cfg["n_cycles"]
-N_EQUILIBRATION_CYCLES = rnemd_cfg["n_equilibration_cycles"]
-N_RUNS           = rnemd_cfg.get("n_runs", 3)
-TAU_T            = rnemd_cfg["tau_t"]
-PRESSURE_GPA     = rnemd_cfg["pressure_gpa"]
-BULK_MODULUS_GPA = rnemd_cfg["bulk_modulus_gpa"]
-TAU_P            = rnemd_cfg["tau_p"]
+STEPS_PER_CYCLE  = int(rnemd_cfg["steps_per_cycle"])
+TIMESTEP_FS      = float(rnemd_cfg["timestep_fs"])
+N_CYCLES         = int(rnemd_cfg["n_cycles"])
+N_RUNS           = int(rnemd_cfg.get("n_runs", 3))
+TEMPERATURE_K    = float(rnemd_cfg["temperature_k"])
+TAU_T            = float(rnemd_cfg["tau_t"])
+PRESSURE_GPA     = float(rnemd_cfg["pressure_gpa"])
+BULK_MODULUS_GPA = float(rnemd_cfg["bulk_modulus_gpa"])
+TAU_P            = float(rnemd_cfg["tau_p"])
 
 # Si atomic mass in amu (used for energy flux calculation)
 M_SI_AMU = 28.085
@@ -211,6 +210,7 @@ def compute_tbr_and_kappa(temps_avg, velocities_hc, bin_centers_angstrom,
     # GB is at the midpoint (bin NBINS//2).  Fit left bulk (cold_bin -> GB)
     # and right bulk (GB -> hot_bin), excluding 1 bin margin near swap bins.
     margin = 1
+    # NOTE: this is only valid when UC_A == UC_B, if we want twin boundaries then this doesn't work!
     gb_bin = NBINS // 2
     left_slice = slice(COLD_BIN + margin, gb_bin)
     right_slice = slice(gb_bin, HOT_BIN - margin)
@@ -351,12 +351,11 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
 
     Steps per run:
       1. Copy atoms, assign fresh Maxwell-Boltzmann velocities.
-      2. Bin atoms along x-axis.
-      3. Equilibrate (N_EQUILIBRATION_CYCLES of NPT, no swapping).
-      4. Production: N_CYCLES of Müller-Plathe rNEMD with velocity swapping.
-      5. Check steady-state convergence.
-      6. Compute TBR and kappa.
-      7. Save raw data and diagnostic plot.
+      2. Bin atoms along z-axis.
+      3. Production: N_CYCLES of Müller-Plathe rNEMD with velocity swapping.
+      4. Check steady-state convergence.
+      5. Compute TBR and kappa.
+      6. Save raw data and diagnostic plot.
 
     Returns (all_run_results, aggregate) where all_run_results is a list of
     per-run dicts and aggregate is the mean ± std summary.
@@ -373,7 +372,7 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
           f"stacking length = {stacking_len:.1f} Å, "
           f"cross-section = {cross_section:.1f} Å²")
 
-    # Bin edges and centers along the stacking direction (axis 2)
+    # Bin edges and centers along the stacking direction (axis 0)
     bins = np.linspace(0, 1, NBINS + 1)
     bin_centers = (bins[:-1] + bins[1:]) / 2.0 * stacking_len  # Å
     total_time_fs = N_CYCLES * STEPS_PER_CYCLE * TIMESTEP_FS
@@ -391,9 +390,14 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         MaxwellBoltzmannDistribution(run_atoms, temperature_K=TEMPERATURE_K)
         print(f"    Initial T = {run_atoms.get_temperature():.1f} K")
 
+        # Convert ASE velocities (Å/t_ASE) to GPUMD units (Å/fs).
+        # Calorine writes vel to model.xyz without converting, but GPUMD
+        # reads vel as Å/fs.  Without this, velocities are ~10x too large.
+        run_atoms.set_velocities(run_atoms.get_velocities() * units.fs)
+
         # Bin atoms along the stacking direction (ASE cell axis 2)
-        scaled_x = [a.scaled_position[2] for a in run_atoms]
-        binned = bin_atoms(bins, scaled_x)
+        scaled_z = [a.scaled_position[2] for a in run_atoms]
+        binned = bin_atoms(bins, scaled_z)
 
         # Save bin visualization
         fig, ax = plt.subplots(figsize=(10, 4))
@@ -405,24 +409,18 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
                 colorlist[atom_indices] = "blue"
             else:
                 colorlist[atom_indices] = "grey"
-        plot_atoms(run_atoms, ax, colors=colorlist)
+        plot_atoms(run_atoms, ax, colors=colorlist, rotation='20x,20y,20z')
         ax.set_title(f"{gb_label_str} run {run_idx} — bin assignment (blue=cold, red=hot)")
         plt.tight_layout()
         plt.savefig(os.path.join(run_dir, "bin_setup.png"), dpi=100)
         plt.close()
 
-        # Equilibration (NPT, no velocity swapping)
-        print(f"    Equilibrating ({N_EQUILIBRATION_CYCLES} cycles)...")
-        for eq_cycle in range(N_EQUILIBRATION_CYCLES):
-            run_atoms = run_one_cycle(run_atoms, run_dir)
-        print(f"    Post-equilibration T = {run_atoms.get_temperature():.1f} K")
-
-        # Production rNEMD cycles
+        # Production rNEMD cycles (structure already equilibrated by generate_gbs.py)
         print(f"    Production ({N_CYCLES} cycles)...")
         temps_times = np.zeros((N_CYCLES, NBINS))
         velocities_hc = np.zeros((N_CYCLES, 2))
 
-        for cycle in range(N_CYCLES):
+        for cycle in (pbar := tqdm(range(N_CYCLES))):
             run_atoms = run_one_cycle(run_atoms, run_dir)
 
             # Müller-Plathe velocity swap
@@ -436,8 +434,8 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
                 temps_times[cycle, b_idx] = run_atoms[atom_indices].get_temperature()
 
             if (cycle + 1) % 10 == 0:
-                print(f"      cycle {cycle + 1}/{N_CYCLES}, "
-                      f"T = {run_atoms.get_temperature():.1f} K")
+                pbar.set_description(f"      cycle {cycle + 1}/{N_CYCLES}, "
+                                     f"T = {run_atoms.get_temperature():.1f} K")
 
         # Save raw data
         np.save(os.path.join(run_dir, "temps_times.npy"), temps_times)
@@ -510,11 +508,6 @@ def process_gb_type(gb_label_str):
         return
 
     atoms = read(traj_path)
-    # # GPUMD requires upper-triangular cell (a along x, b in xy-plane, cz>0).
-    # # cellpar_to_cell preserves fractional coords: axis 2 stays the stacking direction.
-    # params = cell_to_cellpar(atoms.cell)
-    # atoms.set_cell(cellpar_to_cell(params), scale_atoms=True)
-    # atoms.wrap()
     print(f"\n{'='*60}")
     print(f"Processing {gb_label_str}  (config: {CONFIG_NAME})")
     print(f"  using run_{best_run_index} (lowest E = {best_energy:.4f} eV)")
@@ -586,7 +579,10 @@ def main():
     if args.gb:
         process_gb_type(args.gb)
     else:
-        gb_dirs = sorted(glob.glob(os.path.join(GB_RESULTS_DIR, "sigma*")))
+        gb_dirs = sorted(
+            glob.glob(os.path.join(GB_RESULTS_DIR, "sigma*")) +
+            glob.glob(os.path.join(GB_RESULTS_DIR, "bulk_si"))
+        )
         if not gb_dirs:
             raise RuntimeError(f"No GB result folders found in {GB_RESULTS_DIR}.")
         for gb_dir in gb_dirs:

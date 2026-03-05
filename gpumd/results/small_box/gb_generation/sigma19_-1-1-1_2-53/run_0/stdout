@@ -33,22 +33,22 @@ Started running GPUMD.
 Started initializing positions and related parameters.
 ---------------------------------------------------------------
 
-Number of atoms is 1920.
+Number of atoms is 228.
 Use periodic boundary conditions along x.
 Use periodic boundary conditions along y.
 Use periodic boundary conditions along z.
 Box matrix h = [a, b, c] is
-    0.0000000000e+00   -3.9149709097e-15   -7.3034931331e+01
-    0.0000000000e+00   -2.4344977110e+01    0.0000000000e+00
-   -2.1774809492e+01    1.0887404746e+01   -4.4720997440e-15
+   -1.4530709054e+01    1.4530709054e+01   -3.0325234268e-15
+    0.0000000000e+00    0.0000000000e+00   -1.8857538182e+01
+   -8.3893087839e+00   -8.3893087839e+00   -1.1546911887e-15
 Inverse box matrix g = inv(h) is
-    2.8120723619e-18   -2.0538117482e-02   -4.5924626821e-02
-    0.0000000000e+00   -4.1076234965e-02   -0.0000000000e+00
-   -1.3692078322e-02    2.2018541270e-18    0.0000000000e+00
+   -3.4409883106e-02    9.1829582385e-18   -5.9599665822e-02
+    3.4409883106e-02   -1.8841042406e-18   -5.9599665822e-02
+    0.0000000000e+00   -5.3029191315e-02   -0.0000000000e+00
 Do not specify initial velocities here.
 Have no grouping method.
 There is only one atom type.
-    1920 atoms of type 0.
+    228 atoms of type 0.
 Initialized velocities with default T = 300 K.
 
 ---------------------------------------------------------------
@@ -78,45 +78,5 @@ Use the NEP3 potential with 1 atom type.
     number of neural network parameters = 3951.
     number of descriptor parameters = 242.
     total number of parameters = 4193.
-Initialized velocities with input T = 1400 K.
+Initialized velocities with input T = 10 K.
 Time step for this run is 1 fs.
-Use NVT ensemble for this run.
-    choose the Bussi-Donadio-Parrinello method.
-    initial temperature is 1400 K.
-    final temperature is 300 K.
-    tau_T is 100 time_step.
-Dump thermo every 5000 steps.
-Dump position.
-    every 50000 steps.
-Run 150000 steps.
-    15000 steps completed.
-    30000 steps completed.
-    45000 steps completed.
-    60000 steps completed.
-    75000 steps completed.
-    90000 steps completed.
-    105000 steps completed.
-    120000 steps completed.
-    135000 steps completed.
-    150000 steps completed.
-
----------------------------------------------------------------
-Time used for this run = 273.434 second.
-Speed of this run = 1.05327e+06 atom*step/second.
----------------------------------------------------------------
-
-
----------------------------------------------------------------
-Finished executing the commands in run.in.
----------------------------------------------------------------
-
-
----------------------------------------------------------------
-Time used = 273.451904 s.
----------------------------------------------------------------
-
-
----------------------------------------------------------------
-Finished running GPUMD.
----------------------------------------------------------------
-

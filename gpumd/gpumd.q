@@ -16,13 +16,17 @@ module load openblas/0.3.28-gcc-12.4.0
 source /home/${USER}/.bashrc
 source activate chem
 
-# Config file controls the entire pipeline (GB generation + RNEMD).
-# Change this to run a different experiment:
-CONFIG=${1:-configs/small_box.yaml}
-
 cd gpumd
 PYTHON=/home/djr2473/.conda/envs/chem/bin/python
 
-echo "Running config: $CONFIG"
-$PYTHON gb_generation/generate_gbs.py --config "$CONFIG"
-$PYTHON rnemd/run_rnemd.py --config "$CONFIG"
+echo "Running config: small_box"
+$PYTHON gb_generation/generate_gbs.py --config configs/small_box.yaml
+$PYTHON thermo/run_rnemd.py --config configs/small_box.yaml
+
+echo "Running config: medium_box"
+$PYTHON gb_generation/generate_gbs.py --config configs/medium_box.yaml
+$PYTHON thermo/run_rnemd.py --config configs/medium_box.yaml
+
+echo "Running config: large_box"
+$PYTHON gb_generation/generate_gbs.py --config configs/large_box.yaml
+$PYTHON thermo/run_rnemd.py --config configs/large_box.yaml

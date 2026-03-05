@@ -5,7 +5,7 @@ Implements the descriptor set:
   sigma_theta — std dev of bond angles (degrees)
   sigma_l     — std dev of bond lengths (Å)
   H_phi       — Shannon entropy of dihedral angle distribution
-  A_RDF       — integral of |g(r) − 1| dr
+  A_RDF       — integral of |g(r) - 1| dr
   rho         — number density (atoms/Å³)
 
 Plus SOAP descriptors via dscribe, with optional atom subset masking.

@@ -21,7 +21,7 @@ def swap_velocities(atoms, cold_bin_indices, hot_bin_indices):
     return np.linalg.norm(hot_vel / atoms[hottest_ind].mass), np.linalg.norm(cold_vel/ atoms[coldest_ind].mass)
 
 
-def bin_atoms(bins, scaled_x_positions):
+def bin_atoms(bins, scaled_z_positions):
     """
     Returns a list of lists containing atom indices per bin.
     [bin_1[atom indices in bin], bin_2[atom indices in bin 2]...]
@@ -30,7 +30,7 @@ def bin_atoms(bins, scaled_x_positions):
     bins (np.array): scaled x positions designating each bin.
     scaled_x_positions (np.array): scaled x positions for every atom in the simulation box 
     """
-    atom_bin_assignments = np.digitize(scaled_x_positions, bins)
+    atom_bin_assignments = np.digitize(scaled_z_positions, bins)
     bins_containing_atom_indices = np.empty(len(bins) - 1, dtype='object')
     for i in range(len(bins) - 1):
         bins_containing_atom_indices[i] = np.where(

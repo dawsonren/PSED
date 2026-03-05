@@ -7,41 +7,52 @@ gpumd_exec: /home/djr2473/exec/gpumd
 # GB generation parameters
 gb_generation:
   # control simulation box size
-  uc_a: 3                # aimsgb unit cells — controls x-length (heat transport direction)
-  uc_b: 3                # aimsgb unit cells — controls x-length
-  scale_repeat: 4        # repeat along Y and Z before annealing (cross-section convergence)
+  uc_a: 1                # aimsgb unit cells — controls z-length (heat transport direction)
+  uc_b: 1                # aimsgb unit cells — controls z-length
   # control simulation length
-  total_time_ps: 150.0
+  total_time_ps: 10.0
   timestep_fs: 1.0
   # control replications
   n_runs: 1
   # control npt simulation parameters
-  t_start: 1400.0        # K — annealing start temperature
+  t_start: 10.0           # K — annealing start temperature
   t_end: 675.0            # K — annealing end temperature
-  tau_t: 200.0           # thermostat coupling (in timesteps)
-  pressure_gpa: 0          # target pressure [GPa]
-  bulk_modulus_gpa: 100    # bulk modulus estimate for barostat [GPa]
-  tau_p: 1000               # barostat coupling (in timesteps)
-  # control final BFGS relaxation
-  relax_fmax: 0.01
+  tau_t: 200.0            # thermostat coupling (in timesteps)
+  pressure_gpa: 0         # target pressure [GPa]
+  bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
+  tau_p: 1000             # barostat coupling (in timesteps)
 
 # RNEMD parameters
 rnemd:
   # control rnemd setup
-  nbins: 16               # must be even (symmetric PBC paths)
-  # control simulation length, total steps = (n_cycles + n_equlibration_cycles) * steps_per_cycle
-  timestep_fs: 0.4
-  n_equilibration_cycles: 10    # number of equilibration cycles (not included in final output)
-  n_cycles: 50                  # number of production cycles (velocity swaps after each)
-  steps_per_cycle: 400          # controls the frequency of velocity swaps
+  nbins: 16                # must be even (symmetric PBC paths)
+  # control simulation length, total steps = n_cycles * steps_per_cycle
+  timestep_fs: 1
+  n_cycles: 10                    # number of production cycles (velocity swaps after each)
+  steps_per_cycle: 1000           # controls the frequency of velocity swaps
   # control replications
   n_runs: 3                # independent rNEMD simulations per structure (for uncertainty)
   # control npt simulation parameters
-  temperature_k: 675      # K — must be > Debye temp for classical phonon transport
+  temperature_k: 675       # K — must be > Debye temp for classical phonon transport
   tau_t: 20                # thermostat coupling (in timesteps)  
   pressure_gpa: 0          # target pressure [GPa]
   bulk_modulus_gpa: 100    # bulk modulus estimate for barostat [GPa]
   tau_p: 200               # barostat coupling (in timesteps)
+
+# HNEMD parameters
+hnemd:
+  # forcing values for linear response verification (kappa should be flat across these)
+  # typical range around 10-4 to 10-5 — large enough for signal, small enough for linear regime
+  forcing_values: [0.0001, 0.00005, 0.00001]
+  # control simulation length
+  timestep_fs: 1
+  production_time_ps: 500
+  output_interval: 1000            # steps between kappa.out entries
+  # control replications
+  n_runs: 1
+  # control nvt_nhc production parameters
+  temperature_k: 675               # K — must be > Debye temp for classical phonon transport
+  tau_t: 100                       # thermostat coupling for nvt_nhc production (in timesteps)
 
 # ML descriptor parameters
 ml:
@@ -56,12 +67,19 @@ ml:
 
 # GB specifications
 grain_boundaries:
+  - sigma: 19
+    miller: [-1, -1, -1]
+    axis: [2, -5, 3]
+    scale_repeat: 1  # repeat along X and Y before annealing (cross-section convergence)
   - sigma: 5
     miller: [2, -1, 0]
     axis: [0, 0, 1]
+    scale_repeat: 4
   # - sigma: 9
   #   miller: [-1, -2, 1]
   #   axis: [1, 1, 0]
+  #   scale_repeat: 2
   # - sigma: 3
   #   miller: [1, -1, 2]
   #   axis: [1, 1, 0]
+  #   scale_repeat: 7
