@@ -409,7 +409,7 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
                 colorlist[atom_indices] = "blue"
             else:
                 colorlist[atom_indices] = "grey"
-        plot_atoms(run_atoms, ax, colors=colorlist, rotation='20x,20y,20z')
+        plot_atoms(run_atoms, ax, colors=colorlist, rotation="10x,10y,0z")
         ax.set_title(f"{gb_label_str} run {run_idx} — bin assignment (blue=cold, red=hot)")
         plt.tight_layout()
         plt.savefig(os.path.join(run_dir, "bin_setup.png"), dpi=100)

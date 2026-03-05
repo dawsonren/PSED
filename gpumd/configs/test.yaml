@@ -1,6 +1,4 @@
-# Create a bulk crystal with the same size as small_box.yaml
-# NOTE: kappa values are no good since the MFP in monocrystalline
-#       silicon is very long!
+# Create a small crystal with GBs
 
 # paths (relative to gpumd/ root)
 nep_model: potentials/Si_GAP_nep.txt
@@ -8,24 +6,22 @@ gpumd_exec: /home/djr2473/exec/gpumd
 
 # GB generation parameters
 gb_generation:
-  # control simulation box size
-  uc_a: 40                # aimsgb unit cells — controls z-length (heat transport direction)
-  uc_b: 40                # aimsgb unit cells — controls z-length
-  scale_repeat: 4         # repeat along X and Y before annealing (cross-section convergence)
+  # control simulation box size (MD has heat flow over z-axis, so z-axis should be longest)
+  x_nm: 5.0
+  y_nm: 5.0
+  z_nm: 50.0
   # control simulation length
-  total_time_ps: 100.0
+  total_time_ps: 10.0
   timestep_fs: 1.0
   # control replications
   n_runs: 1
   # control npt simulation parameters
-  t_start: 1400.0          # K — annealing start temperature
-  t_end: 675.0             # K — annealing end temperature
-  tau_t: 200.0             # thermostat coupling (in timesteps)
-  pressure_gpa: 0          # target pressure [GPa]
-  bulk_modulus_gpa: 100    # bulk modulus estimate for barostat [GPa]
-  tau_p: 1000              # barostat coupling (in timesteps)
-  # control final BFGS relaxation
-  relax_fmax: 0.01
+  t_start: 10.0           # K — annealing start temperature
+  t_end: 675.0            # K — annealing end temperature
+  tau_t: 200.0            # thermostat coupling (in timesteps)
+  pressure_gpa: 0         # target pressure [GPa]
+  bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
+  tau_p: 1000             # barostat coupling (in timesteps)
 
 # RNEMD parameters
 rnemd:
@@ -33,7 +29,7 @@ rnemd:
   nbins: 16                # must be even (symmetric PBC paths)
   # control simulation length, total steps = n_cycles * steps_per_cycle
   timestep_fs: 1
-  n_cycles: 300                  # number of production cycles (velocity swaps after each)
+  n_cycles: 10                    # number of production cycles (velocity swaps after each)
   steps_per_cycle: 1000           # controls the frequency of velocity swaps
   # control replications
   n_runs: 3                # independent rNEMD simulations per structure (for uncertainty)
@@ -71,9 +67,7 @@ ml:
   gb_dist_thresholds: [5.0, 10.0]  # Å — distance from GB plane for atom subsets
 
 # GB specifications
-# NOTE: -1 means generate no GB
 grain_boundaries:
-  - sigma: -1
-    miller: -1
-    axis: -1
-    scale_repeat: 20
+- axis: [1, 0, 0]
+  sigma: 5
+  plane: [0, 1, 2]

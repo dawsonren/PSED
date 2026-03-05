@@ -84,8 +84,8 @@ GPUMD_EXEC     = os.path.expandvars(config["gpumd_exec"])
 RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
 
 gb_cfg = config["gb_generation"]
-UC_A           = int(gb_cfg["uc_a"])
-UC_B           = int(gb_cfg["uc_b"])
+# minimum length of supercell in x/y/z axes in angstroms
+BOX_SIZE       = np.array([float(gb_cfg["x_nm"]) * 10, float(gb_cfg["y_nm"]) * 10, float(gb_cfg["z_nm"]) * 10])
 N_RUNS         = int(gb_cfg["n_runs"])
 T_START        = float(gb_cfg["t_start"])
 T_END          = float(gb_cfg["t_end"])
@@ -105,7 +105,7 @@ _raw_gbs = config["grain_boundaries"]
 # sigma: -1 in the config signals a bulk-only run (no grain boundary)
 NO_GB_MODE = len(_raw_gbs) == 1 and _raw_gbs[0]["sigma"] == -1
 GB_LIST = [] if NO_GB_MODE else [
-    (entry["sigma"], tuple(entry["miller"]), tuple(entry["axis"]), entry["scale_repeat"])
+    (tuple(entry["axis"]), entry["sigma"], tuple(entry["plane"]))
     for entry in _raw_gbs
 ]
 
@@ -113,29 +113,72 @@ GB_LIST = [] if NO_GB_MODE else [
 # Helpers
 # ---------------------------------------------------------------------------
 
-def gb_label(sigma, miller, axis):
+def gb_label(axis, sigma, plane):
     """Produce a filesystem-safe label, e.g. sigma5_2-10_001"""
-    m = "".join(str(x) for x in miller).replace("-", "-")
     a = "".join(str(x) for x in axis)
-    return f"sigma{sigma}_{m}_{a}"
+    p = "".join(str(x) for x in plane)
+    return f"{a}_sigma{sigma}_{p}"
 
 
-def build_gb_atoms(s_input, sigma, miller, axis):
-    """
-    Build a periodic bicrystal using aimsgb and return an ASE Atoms object.
-    The cross-sectional plane between crystals is perpendicular to the
-    z-axis in aimsgb
+def build_gb_atoms(s_input, axis, sigma, plane):
+    # --- Probe build: uc_a=uc_b=1 to get base dimensions ---
+    gb_probe = GrainBoundary(axis, sigma, plane, s_input, uc_a=1, uc_b=1)
+    structure_probe = Grain.stack_grains(
+        gb_probe.grain_a, gb_probe.grain_b,
+        direction=gb_probe.direction, to_primitive=False
+    )
+    atoms_probe = structure_probe.to_ase_atoms()
+    probe_lengths = atoms_probe.cell.lengths()
+    d = gb_probe.direction
 
-    The z-length is determined by uc_a + uc_b.
-    """
-    gb = GrainBoundary(axis, sigma, miller, s_input, uc_a=UC_A, uc_b=UC_B)
-    structure = Grain.stack_grains(gb.grain_a, gb.grain_b, direction=gb.direction)
+    # --- Determine the axis permutation ---
+    if d == 0:
+        perm = [1, 2, 0]
+    elif d == 1:
+        perm = [0, 2, 1]
+    else:
+        perm = [0, 1, 2]
 
+    # --- Compute multipliers ---
+    # After permutation: new_x = old[perm[0]], new_y = old[perm[1]], new_z = old[d]
+    # UC controls z (stacking), repeat controls x and y (in-plane)
+    UC = max(int(np.ceil(BOX_SIZE[2] / probe_lengths[d])), 1)
+    scale_x = max(int(np.ceil(BOX_SIZE[0] / probe_lengths[perm[0]])), 1)
+    scale_y = max(int(np.ceil(BOX_SIZE[1] / probe_lengths[perm[1]])), 1)
+
+    # --- Real build with correct UC ---
+    gb = GrainBoundary(axis, sigma, plane, s_input, uc_a=UC, uc_b=UC)
+    structure = Grain.stack_grains(
+        gb.grain_a, gb.grain_b,
+        direction=gb.direction,
+        to_primitive=False
+    )
     atoms = structure.to_ase_atoms()
+
+    # --- Permute so stacking direction → z ---
+    if d != 2:
+        new_cell = atoms.cell[perm][:, perm]
+        new_positions = atoms.positions[:, perm]
+        atoms.set_cell(new_cell, scale_atoms=False)
+        atoms.set_positions(new_positions)
+
+    # --- In-plane tiling ---
+    atoms = atoms.repeat((scale_x, scale_y, 1))
+
+    # --- Clean up any tiny off-diagonal elements so it's cubic ---
+    cell = atoms.cell[:]
+    np.fill_diagonal(cell, np.diag(cell))  # keep diagonal
+    off_diag_mask = ~np.eye(3, dtype=bool)
+    cell[off_diag_mask] = 0.0
+    atoms.set_cell(cell, scale_atoms=False)
+
     atoms.pbc = True
     atoms.wrap()
 
-    return atoms, gb
+    print(f"Final cell lengths (x, y, z): {atoms.cell.lengths()}")
+    print(f"Final cell matrix:\n{atoms.cell[:]}")
+    print(f"Number of atoms: {len(atoms)}")
+    return atoms, (scale_x, scale_y, UC)
 
 
 def cool_with_gpumd(atoms, run_dir):
@@ -343,27 +386,20 @@ def plot_pressure_trace(run_dir, label, run_index):
 BULK_SI_LABEL = "bulk_si"
 
 
-def build_bulk_atoms(s_input, scale_repeat):
+def build_bulk_atoms(s_input):
     """
-    Build a bulk Si supercell by repeating the unit cell with
-    (SCALE_REPEAT, SCALE_REPEAT, UC_A + UC_B) to match the approximate size
-    of a GB cell: x/y cross-section set by SCALE_REPEAT, z stacking length
-    set by UC_A + UC_B unit cells.
+    Build a bulk Si supercell by repeating the unit cell to get to
+    the minimum BOX_SIZE.
     """
     atoms = s_input.to_ase_atoms()
-
-    # Convert to upper-triangular cell (required by GPUMD). For cubic Si this
-    # produces a diagonal (orthogonal) cell, compatible with a scalar pressure.
-    # Without this the cell from aimsgb may be in a non-upper-triangular
-    # orientation and GPUMD raises "Cannot use triclinic box with only 1
-    # target pressure component".
-    params = cell_to_cellpar(atoms.cell)
-    atoms.set_cell(cellpar_to_cell(params), scale_atoms=True)
-    atoms.wrap()
-
-    atoms = atoms.repeat((scale_repeat, scale_repeat, UC_A + UC_B))
+    lengths = atoms.cell.lengths()  # ~[5.431, 5.431, 5.431] for conventional Si
+    nx = max(int(np.ceil(BOX_SIZE[0] / lengths[0])), 1)
+    ny = max(int(np.ceil(BOX_SIZE[1] / lengths[1])), 1)
+    nz = max(int(np.ceil(BOX_SIZE[2] / lengths[2])), 1)
+    atoms = atoms.repeat((nx, ny, nz))
     atoms.pbc = True
     atoms.wrap()
+
     return atoms
 
 
@@ -371,14 +407,14 @@ def build_bulk_atoms(s_input, scale_repeat):
 # Main loop
 # ---------------------------------------------------------------------------
 
-def process_gb(sigma, miller, axis, scale_repeat, s_input):
+def process_gb(axis, sigma, plane, s_input):
     # sigma == -1 signals a bulk-only run (no grain boundary)
     no_gb = (sigma == -1)
 
     if no_gb:
         label = BULK_SI_LABEL
     else:
-        label = gb_label(sigma, miller, axis)
+        label = gb_label(axis, sigma, plane)
 
     out_dir = os.path.join(RESULTS_DIR, label)
     os.makedirs(out_dir, exist_ok=True)
@@ -389,32 +425,31 @@ def process_gb(sigma, miller, axis, scale_repeat, s_input):
     print(f"Processing: {label}  (config: {CONFIG_NAME})")
     if no_gb:
         print(f"  Bulk Si — no grain boundary")
-        print(f"  scale_repeat={scale_repeat}, uc_a+uc_b={UC_A + UC_B}")
     else:
-        print(f"  sigma={sigma}, miller={miller}, axis={axis}")
-        print(f"  uc_a={UC_A}, uc_b={UC_B}, scale_repeat={scale_repeat}")
+        print(f"  axis={axis}, sigma={sigma}, plane={plane}")
     print(f"  n_runs={N_RUNS}, T: {T_START}K -> {T_END}K over {TOTAL_TIME_PS}ps")
     print(f"{'='*60}")
 
     # Build initial structure
     if no_gb:
-        gb_atoms = build_bulk_atoms(s_input)
-        print(f"  Built bulk Si: {len(gb_atoms)} atoms "
-              f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)")
+        gb_atoms, scaling = build_bulk_atoms(s_input)
+        print(f"  Built bulk Si: {len(gb_atoms)} atoms after {scaling[0]}x{scaling[1]}x{scaling[2]} (XxYxZ) repeat\n"
+              f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)\n"
+              f"(goal: {BOX_SIZE[0]} x {BOX_SIZE[1]} x {BOX_SIZE[2]} Å)")
     else:
         # Build initial GB structure and repeat along X/Y for cross-section convergence.
         # This must happen before annealing so GPUMD sees a thick enough cell in all
         # periodic directions (NEP requires thickness >= 2 * cutoff = 10 Å).
-        gb_atoms, gb = build_gb_atoms(s_input, sigma, miller, axis)
-        gb_atoms = gb_atoms.repeat((scale_repeat, scale_repeat, 1))
+        gb_atoms, scaling = build_gb_atoms(s_input, axis, sigma, plane)
         gb_atoms.wrap()
-        print(f"  Built GB: {len(gb_atoms)} atoms after {scale_repeat}x X/Y repeat "
-              f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)")
+        print(f"  Built GB: {len(gb_atoms)} atoms after {scaling[0]}x{scaling[1]}x{scaling[2]} (XxYxZ) repeat\n"
+              f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)\n"
+              f"(goal: {BOX_SIZE[0]} x {BOX_SIZE[1]} x {BOX_SIZE[2]} Å)")
 
     # Save initial structure for reference
     write(os.path.join(out_dir, "initial.traj"), gb_atoms)
     fig, ax = plt.subplots(figsize=(8, 4))
-    plot_atoms(gb_atoms, ax)
+    plot_atoms(gb_atoms, ax, rotation="10x,10y,0z")
     ax.set_title(f"{label} — initial")
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "initial.png"))
@@ -440,9 +475,9 @@ def process_gb(sigma, miller, axis, scale_repeat, s_input):
 
             # Attach metadata to atoms.info so downstream scripts can read it back
             if not no_gb:
-                cooled_atoms.info["sigma"]  = sigma
-                cooled_atoms.info["miller"] = list(miller)
                 cooled_atoms.info["axis"]   = list(axis)
+                cooled_atoms.info["sigma"]  = sigma
+                cooled_atoms.info["plane"] = list(plane)
             cooled_atoms.info["run_index"]  = i
             cooled_atoms.info["energy_ev"]  = energy
             cooled_atoms.info["gb_label"]   = label
@@ -453,7 +488,7 @@ def process_gb(sigma, miller, axis, scale_repeat, s_input):
 
             # Save per-run visualization
             fig, ax = plt.subplots(figsize=(8, 4))
-            plot_atoms(cooled_atoms, ax)
+            plot_atoms(cooled_atoms, ax, rotation="10x,10y,0z")
             ax.set_title(f"{label} run {i} — E={energy:.4f} eV")
             plt.tight_layout()
             plt.savefig(os.path.join(run_dir, "relaxed.png"))
@@ -486,11 +521,10 @@ def main():
     s_input = Grain.from_mp_id("mp-149")
 
     if NO_GB_MODE:
-        scale_repeat = _raw_gbs[0]["scale_repeat"]  # still read scale_repeat for bulk runs
         process_gb(-1, None, None, s_input)
     else:
-        for (sigma, miller, axis, scale_repeat) in GB_LIST:
-            process_gb(sigma, miller, axis, scale_repeat, s_input)
+        for (axis, sigma, plane) in GB_LIST:
+            process_gb(axis, sigma, plane, s_input)
 
     print("\nAll structures processed.")
 

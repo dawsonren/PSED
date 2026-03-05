@@ -93,7 +93,7 @@ def compute_global_descriptors(
         sigma_theta  — std dev of bond angles (degrees)
         sigma_l      — std dev of bond lengths (Å)
         H_phi        — Shannon entropy of dihedral distribution (nats)
-        A_RDF        — integral of |g(r) − 1| dr (Å)
+        A_RDF        — integral of |g(r) - 1| dr (Å)
         rho          — number density (atoms/Å³)
         n_atoms_used — number of atoms included after masking
     """
