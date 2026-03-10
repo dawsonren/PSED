@@ -11,7 +11,7 @@ gb_generation:
   y_nm: 5.0
   z_nm: 50.0
   # control simulation length
-  total_time_ps: 10.0
+  total_time_ps: 100.0
   timestep_fs: 1.0
   # control replications
   n_runs: 1
@@ -22,15 +22,18 @@ gb_generation:
   pressure_gpa: 0         # target pressure [GPa]
   bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
   tau_p: 1000             # barostat coupling (in timesteps)
+  # control debugging plots (can be slow) and intermediate structure dumps
+  debug: False
+  dump_interval: 50000
 
 # RNEMD parameters
 rnemd:
   # control rnemd setup
-  nbins: 16                # must be even (symmetric PBC paths)
+  nbins: 32                # must be even (symmetric PBC paths)
   # control simulation length, total steps = n_cycles * steps_per_cycle
   timestep_fs: 1
-  n_cycles: 10                    # number of production cycles (velocity swaps after each)
-  steps_per_cycle: 1000           # controls the frequency of velocity swaps
+  n_cycles: 100                    # number of production cycles (velocity swaps after each)
+  steps_per_cycle: 10000           # controls the frequency of velocity swaps
   # control replications
   n_runs: 3                # independent rNEMD simulations per structure (for uncertainty)
   # control npt simulation parameters
@@ -39,6 +42,9 @@ rnemd:
   pressure_gpa: 0          # target pressure [GPa]
   bulk_modulus_gpa: 100    # bulk modulus estimate for barostat [GPa]
   tau_p: 200               # barostat coupling (in timesteps)
+  # control debugging plots (can be slow)
+  debug_structure: False
+  debug_diagnostics: True
 
 # HNEMD parameters
 hnemd:
@@ -71,6 +77,9 @@ grain_boundaries:
 - axis: [1, 0, 0]
   sigma: 5
   plane: [0, 1, 2]
+- axis: [1, 0, 0]
+  sigma: 37
+  plane: [0, 1, -6]
 - axis: [1, 0, 0]
   sigma: 5
   plane: [0, -2, 1]
@@ -125,9 +134,6 @@ grain_boundaries:
 - axis: [1, 0, 0]
   sigma: 37
   plane: [0, -6, -1]
-- axis: [1, 0, 0]
-  sigma: 37
-  plane: [0, 1, -6]
 - axis: [1, 0, 0]
   sigma: 37
   plane: [1, 0, 0]

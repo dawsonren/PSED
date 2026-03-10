@@ -118,6 +118,8 @@ TAU_T            = float(rnemd_cfg["tau_t"])
 PRESSURE_GPA     = float(rnemd_cfg["pressure_gpa"])
 BULK_MODULUS_GPA = float(rnemd_cfg["bulk_modulus_gpa"])
 TAU_P            = float(rnemd_cfg["tau_p"])
+DEBUG_STRUCTURE  = bool(rnemd_cfg.get("debug_structure", False))
+DEBUG_DIAGNOSTICS = bool(rnemd_cfg.get("debug_diagnostics", True))
 
 # Si atomic mass in amu (used for energy flux calculation)
 M_SI_AMU = 28.085
@@ -400,20 +402,21 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         binned = bin_atoms(bins, scaled_z)
 
         # Save bin visualization
-        fig, ax = plt.subplots(figsize=(10, 4))
-        colorlist = np.empty(len(run_atoms), dtype="object")
-        for b_idx, atom_indices in enumerate(binned):
-            if b_idx == HOT_BIN:
-                colorlist[atom_indices] = "red"
-            elif b_idx == COLD_BIN:
-                colorlist[atom_indices] = "blue"
-            else:
-                colorlist[atom_indices] = "grey"
-        plot_atoms(run_atoms, ax, colors=colorlist, rotation="10x,10y,0z")
-        ax.set_title(f"{gb_label_str} run {run_idx} — bin assignment (blue=cold, red=hot)")
-        plt.tight_layout()
-        plt.savefig(os.path.join(run_dir, "bin_setup.png"), dpi=100)
-        plt.close()
+        if DEBUG_STRUCTURE:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            colorlist = np.empty(len(run_atoms), dtype="object")
+            for b_idx, atom_indices in enumerate(binned):
+                if b_idx == HOT_BIN:
+                    colorlist[atom_indices] = "red"
+                elif b_idx == COLD_BIN:
+                    colorlist[atom_indices] = "blue"
+                else:
+                    colorlist[atom_indices] = "grey"
+            plot_atoms(run_atoms, ax, colors=colorlist, rotation="10x,10y,0z")
+            ax.set_title(f"{gb_label_str} run {run_idx} — bin assignment (blue=cold, red=hot)")
+            plt.tight_layout()
+            plt.savefig(os.path.join(run_dir, "bin_setup.png"), dpi=100)
+            plt.close()
 
         # Production rNEMD cycles (structure already equilibrated by generate_gbs.py)
         print(f"    Production ({N_CYCLES} cycles)...")
@@ -433,9 +436,7 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
             for b_idx, atom_indices in enumerate(binned):
                 temps_times[cycle, b_idx] = run_atoms[atom_indices].get_temperature()
 
-            if (cycle + 1) % 10 == 0:
-                pbar.set_description(f"      cycle {cycle + 1}/{N_CYCLES}, "
-                                     f"T = {run_atoms.get_temperature():.1f} K")
+            pbar.set_description(f"      cycle {cycle + 1}/{N_CYCLES}, T = {run_atoms.get_temperature():.1f} K")
 
         # Save raw data
         np.save(os.path.join(run_dir, "temps_times.npy"), temps_times)
@@ -473,10 +474,11 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
               f"J = {result['J_SI']:.3e} W/m²")
 
         # Diagnostic plot
-        plot_temperature_profile(
-            temps_times, bin_centers, result, run_dir,
-            gb_label_str, run_idx, converged, max_dev,
-        )
+        if DEBUG_DIAGNOSTICS:
+            plot_temperature_profile(
+                temps_times, bin_centers, result, run_dir,
+                gb_label_str, run_idx, converged, max_dev,
+            )
 
     # Aggregate across runs
     aggregate = aggregate_run_results(all_run_results)
@@ -580,7 +582,7 @@ def main():
         process_gb_type(args.gb)
     else:
         gb_dirs = sorted(
-            glob.glob(os.path.join(GB_RESULTS_DIR, "sigma*")) +
+            glob.glob(os.path.join(GB_RESULTS_DIR, "*sigma*")) +
             glob.glob(os.path.join(GB_RESULTS_DIR, "bulk_si"))
         )
         if not gb_dirs:

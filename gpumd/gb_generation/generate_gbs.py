@@ -3,21 +3,17 @@ Use aimsgb to generate grain boundaries, then use GPUMD to relax
 such structures into realistic crystalline configurations.
 
 Usage:
-    python generate_gbs.py --config ../configs/small_box.yaml
-    python generate_gbs.py --config ../configs/large_box.yaml
+    python gb_generation/generate_gbs.py --config configs/small_box.yaml
+    python gb_generation/generate_gbs.py --config configs/large_box.yaml
 
 Pipeline:
 1. Load GB specifications and run parameters from a unified YAML config.
 2. Build GB structure with aimsgb (GrainBoundary + Grain.stack_grains).
-   The x-length is controlled by uc_a + uc_b, y/z scale is controlled
-   by SCALE_REPEAT parameter that is specific to eat GB config entry.
+   The x/y/z lengths repeated to achieve the correct BOX_SIZE
 3. Anneal with GPUMD: cooling ramp from t_start down to t_end over
    total_time_ps, using npt_scr thermostat.
 4. Repeat step 3 n_runs times with different random initial velocities.
-   ALL relaxed structures are saved (not just the lowest-energy one) because
-   each metastable structure is a genuine local minimum and valid ML training
-   data — different runs produce distinct atomic arrangements at the interface
-   consistent with the same crystallographic misorientation.
+   All relaxed structures are saved as .traj files.
 5. A summary.csv records energies per run.
 
 File outputs:
@@ -26,7 +22,6 @@ File outputs:
         run_0/          <- GPUMD working directory
           movie.xyz
           thermo.out
-          velocity.out
         run_1/
           ...
         summary.csv     <- run_index, energy_ev per row
@@ -51,7 +46,9 @@ from ase.io import read, write
 from ase.visualize.plot import plot_atoms
 from ase.geometry.cell import cell_to_cellpar, cellpar_to_cell
 
-from calorine.calculators import GPUNEP
+from calorine.calculators import GPUNEP, CPUNEP
+
+from utils.work_coordination import gb_label, check_gb_generation_status
 
 # ---------------------------------------------------------------------------
 # CLI and configuration
@@ -85,21 +82,22 @@ RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
 
 gb_cfg = config["gb_generation"]
 # minimum length of supercell in x/y/z axes in angstroms
-BOX_SIZE       = np.array([float(gb_cfg["x_nm"]) * 10, float(gb_cfg["y_nm"]) * 10, float(gb_cfg["z_nm"]) * 10])
-N_RUNS         = int(gb_cfg["n_runs"])
-T_START        = float(gb_cfg["t_start"])
-T_END          = float(gb_cfg["t_end"])
-TOTAL_TIME_PS  = float(gb_cfg["total_time_ps"])
-TIMESTEP_FS    = float(gb_cfg["timestep_fs"])
-TAU_T          = float(gb_cfg["tau_t"])
+BOX_SIZE         = np.array([float(gb_cfg["x_nm"]) * 10, float(gb_cfg["y_nm"]) * 10, float(gb_cfg["z_nm"]) * 10])
+N_RUNS           = int(gb_cfg["n_runs"])
+T_START          = float(gb_cfg["t_start"])
+T_END            = float(gb_cfg["t_end"])
+TOTAL_TIME_PS    = float(gb_cfg["total_time_ps"])
+TIMESTEP_FS      = float(gb_cfg["timestep_fs"])
+TAU_T            = float(gb_cfg["tau_t"])
 PRESSURE_GPA     = float(gb_cfg["pressure_gpa"])
 BULK_MODULUS_GPA = float(gb_cfg["bulk_modulus_gpa"])
 TAU_P            = float(gb_cfg["tau_p"])
+DEBUG            = bool(gb_cfg.get("debug", False))
 
 # Derived
-N_STEPS        = int(TOTAL_TIME_PS * 1000.0 / TIMESTEP_FS)
-THERMO_INTERVAL = 5000    # write thermo every 5 ps — enough to verify T tracking
-DUMP_INTERVAL   = 50000   # write positions every 50 ps — file size control
+N_STEPS         = int(TOTAL_TIME_PS * 1000.0 / TIMESTEP_FS)
+DUMP_INTERVAL   = int(gb_cfg["dump_interval"]) if DEBUG else N_STEPS - 1  # only dump at the end if not debugging
+THERMO_INTERVAL = max(int(N_STEPS / 100), 1)  # aim for ~100 thermo points per run
 
 _raw_gbs = config["grain_boundaries"]
 # sigma: -1 in the config signals a bulk-only run (no grain boundary)
@@ -175,9 +173,6 @@ def build_gb_atoms(s_input, axis, sigma, plane):
     atoms.pbc = True
     atoms.wrap()
 
-    print(f"Final cell lengths (x, y, z): {atoms.cell.lengths()}")
-    print(f"Final cell matrix:\n{atoms.cell[:]}")
-    print(f"Number of atoms: {len(atoms)}")
     return atoms, (scale_x, scale_y, UC)
 
 
@@ -210,10 +205,12 @@ def cool_with_gpumd(atoms, run_dir):
         ("velocity",  T_START),
         ("time_step", TIMESTEP_FS),
         ("ensemble",  ["npt_scr", T_START, T_END, TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]),
-        ("dump_thermo", THERMO_INTERVAL),
         ("dump_position", DUMP_INTERVAL),
         ("run", N_STEPS),
     ]
+
+    if DEBUG:
+        md_params.insert(3, ("dump_thermo", THERMO_INTERVAL))
 
     cooled_atoms = calc.run_custom_md(
         md_params,
@@ -407,7 +404,7 @@ def build_bulk_atoms(s_input):
 # Main loop
 # ---------------------------------------------------------------------------
 
-def process_gb(axis, sigma, plane, s_input):
+def process_gb(axis, sigma, plane, s_input, start_run=0):
     # sigma == -1 signals a bulk-only run (no grain boundary)
     no_gb = (sigma == -1)
 
@@ -415,6 +412,10 @@ def process_gb(axis, sigma, plane, s_input):
         label = BULK_SI_LABEL
     else:
         label = gb_label(axis, sigma, plane)
+
+    if start_run >= N_RUNS:
+        print(f"\nSkipping {label}: already completed ({N_RUNS}/{N_RUNS} runs done)")
+        return
 
     out_dir = os.path.join(RESULTS_DIR, label)
     os.makedirs(out_dir, exist_ok=True)
@@ -427,15 +428,17 @@ def process_gb(axis, sigma, plane, s_input):
         print(f"  Bulk Si — no grain boundary")
     else:
         print(f"  axis={axis}, sigma={sigma}, plane={plane}")
-    print(f"  n_runs={N_RUNS}, T: {T_START}K -> {T_END}K over {TOTAL_TIME_PS}ps")
+    if start_run > 0:
+        print(f"  Resuming from run {start_run} ({start_run}/{N_RUNS} already done)")
+    print(f"  n_runs={N_RUNS - start_run} remaining, T: {T_START}K -> {T_END}K over {TOTAL_TIME_PS}ps")
     print(f"{'='*60}")
 
     # Build initial structure
     if no_gb:
         gb_atoms, scaling = build_bulk_atoms(s_input)
         print(f"  Built bulk Si: {len(gb_atoms)} atoms after {scaling[0]}x{scaling[1]}x{scaling[2]} (XxYxZ) repeat\n"
-              f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)\n"
-              f"(goal: {BOX_SIZE[0]} x {BOX_SIZE[1]} x {BOX_SIZE[2]} Å)")
+              f"  (cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)\n"
+              f"  (goal: {BOX_SIZE[0]} x {BOX_SIZE[1]} x {BOX_SIZE[2]} Å)")
     else:
         # Build initial GB structure and repeat along X/Y for cross-section convergence.
         # This must happen before annealing so GPUMD sees a thick enough cell in all
@@ -443,24 +446,21 @@ def process_gb(axis, sigma, plane, s_input):
         gb_atoms, scaling = build_gb_atoms(s_input, axis, sigma, plane)
         gb_atoms.wrap()
         print(f"  Built GB: {len(gb_atoms)} atoms after {scaling[0]}x{scaling[1]}x{scaling[2]} (XxYxZ) repeat\n"
-              f"(cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)\n"
-              f"(goal: {BOX_SIZE[0]} x {BOX_SIZE[1]} x {BOX_SIZE[2]} Å)")
+              f"  (cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)\n"
+              f"  (goal: {BOX_SIZE[0]} x {BOX_SIZE[1]} x {BOX_SIZE[2]} Å)")
 
-    # Save initial structure for reference
-    write(os.path.join(out_dir, "initial.traj"), gb_atoms)
-    fig, ax = plt.subplots(figsize=(8, 4))
-    plot_atoms(gb_atoms, ax, rotation="10x,10y,0z")
-    ax.set_title(f"{label} — initial")
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "initial.png"))
-    plt.close()
+    if DEBUG:
+        # Save initial structure for reference
+        write(os.path.join(out_dir, "initial.traj"), gb_atoms)
 
-    # Open summary CSV
-    with open(summary_file, "w", newline="") as csvf:
+    # Open summary CSV (write fresh if starting from scratch, append if resuming)
+    open_mode = "a" if start_run > 0 else "w"
+    with open(summary_file, open_mode, newline="") as csvf:
         writer = csv.writer(csvf)
-        writer.writerow(["run_index", "energy_ev"])
+        if start_run == 0:
+            writer.writerow(["run_index", "energy_ev"])
 
-        for i in range(N_RUNS):
+        for i in range(start_run, N_RUNS):
             print(f"\n  Run {i+1}/{N_RUNS}...")
 
             run_dir = os.path.join(out_dir, f"run_{i}")
@@ -468,10 +468,13 @@ def process_gb(axis, sigma, plane, s_input):
 
             # Anneal with GPUMD
             cooled_atoms = cool_with_gpumd(start_atoms, run_dir=run_dir)
+            calc = CPUNEP(NEP_MODEL_FILE)
+            cooled_atoms.calc = calc
             energy = cooled_atoms.get_potential_energy()
             print(f"    Cooling done. Energy = {energy:.6f} eV")
-            plot_temperature_trace(run_dir, label, i)
-            plot_pressure_trace(run_dir, label, i)
+            if DEBUG:
+                plot_temperature_trace(run_dir, label, i)
+                plot_pressure_trace(run_dir, label, i)
 
             # Attach metadata to atoms.info so downstream scripts can read it back
             if not no_gb:
@@ -486,13 +489,14 @@ def process_gb(axis, sigma, plane, s_input):
             write(os.path.join(run_dir, "structure.traj"), cooled_atoms)
             writer.writerow([i, energy])
 
-            # Save per-run visualization
-            fig, ax = plt.subplots(figsize=(8, 4))
-            plot_atoms(cooled_atoms, ax, rotation="10x,10y,0z")
-            ax.set_title(f"{label} run {i} — E={energy:.4f} eV")
-            plt.tight_layout()
-            plt.savefig(os.path.join(run_dir, "relaxed.png"))
-            plt.close()
+            if DEBUG:
+                # Save per-run visualization
+                fig, ax = plt.subplots(figsize=(8, 4))
+                plot_atoms(cooled_atoms, ax, rotation="10x,10y,0z")
+                ax.set_title(f"{label} run {i} — E={energy:.4f} eV")
+                plt.tight_layout()
+                plt.savefig(os.path.join(run_dir, "relaxed.png"))
+                plt.close()
 
     # Print energy summary across runs
     all_structures = [
@@ -523,8 +527,12 @@ def main():
     if NO_GB_MODE:
         process_gb(-1, None, None, s_input)
     else:
+        gb_status = check_gb_generation_status(args.config)
         for (axis, sigma, plane) in GB_LIST:
-            process_gb(axis, sigma, plane, s_input)
+            label = gb_label(axis, sigma, plane)
+            info = gb_status.get(label, {"status": "not_started", "runs_remaining": N_RUNS})
+            start_run = N_RUNS - info["runs_remaining"]
+            process_gb(axis, sigma, plane, s_input, start_run=start_run)
 
     print("\nAll structures processed.")
 

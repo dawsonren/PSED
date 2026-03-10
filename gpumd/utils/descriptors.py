@@ -106,8 +106,7 @@ def compute_global_descriptors(
 
     # --- σ_l and σ_θ via ase.geometry.analysis.Analysis ---
     # Analysis requires a list of images
-    ana = Analysis([sub_atoms], nl_max_neighbors=100)
-    ana_all = Analysis([atoms], nl_max_neighbors=100)
+    ana = Analysis([sub_atoms])
 
     # Bond lengths: all Si-Si pairs within bond_cutoff
     # We use a simple cutoff-based NL by passing cutoff manually

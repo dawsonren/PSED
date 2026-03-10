@@ -1,0 +1,124 @@
+
+***************************************************************
+*                 Welcome to use GPUMD                        *
+*     (Graphics Processing Units Molecular Dynamics)          *
+*                     version 4.8                             *
+*              This is the gpumd executable                   *
+***************************************************************
+
+
+---------------------------------------------------------------
+Compiling options:
+---------------------------------------------------------------
+
+DEBUG is off: Use different PRNG seeds for different runs.
+
+---------------------------------------------------------------
+GPU information:
+---------------------------------------------------------------
+
+number of GPUs = 1
+Device id:                   0
+    Device name:             NVIDIA H100 80GB HBM3
+    Compute capability:      9.0
+    Amount of global memory: 79.1896 GB
+    Number of SMs:           132
+
+---------------------------------------------------------------
+Started running GPUMD.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Started initializing positions and related parameters.
+---------------------------------------------------------------
+
+Number of atoms is 142080.
+Use periodic boundary conditions along x.
+Use periodic boundary conditions along y.
+Use periodic boundary conditions along z.
+Box matrix h = [a, b, c] is
+    9.3656996938e+01    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    5.4437023729e+01    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    5.6194198163e+02
+Inverse box matrix g = inv(h) is
+    1.0677258856e-02    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    1.8369850728e-02    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    1.7795431427e-03
+Do not specify initial velocities here.
+Have no grouping method.
+There is only one atom type.
+    142080 atoms of type 0.
+Initialized velocities with default T = 300 K.
+
+---------------------------------------------------------------
+Finished initializing positions and related parameters.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Started executing the commands in run.in.
+---------------------------------------------------------------
+
+Use the NEP3 potential with 1 atom type.
+    type 0 (Si with Z = 14).
+    radial cutoff = 5 A.
+    angular cutoff = 5 A.
+    MN_radial = 53.
+    enlarged MN_radial = 67.
+    enlarged MN_angular = 67.
+    n_max_radial = 10.
+    n_max_angular = 10.
+    basis_size_radial = 10.
+    basis_size_angular = 10.
+    l_max_3body = 4.
+    l_max_4body = 2.
+    l_max_5body = 1.
+    ANN = 77-50-1.
+    number of neural network parameters = 3951.
+    number of descriptor parameters = 242.
+    total number of parameters = 4193.
+Initialized velocities with input T = 10 K.
+Time step for this run is 1 fs.
+Use NPT ensemble for this run.
+    choose the SCR method.
+    initial temperature is 10 K.
+    final temperature is 675 K.
+    tau_T is 200 time_step.
+    isotropic pressure is 0 GPa.
+    bulk modulus is 100 GPa.
+    tau_p is 1000 time_step.
+Dump position.
+    every 99999 steps.
+Run 100000 steps.
+    10000 steps completed.
+    20000 steps completed.
+    30000 steps completed.
+    40000 steps completed.
+    50000 steps completed.
+    60000 steps completed.
+    70000 steps completed.
+    80000 steps completed.
+    90000 steps completed.
+    100000 steps completed.
+
+---------------------------------------------------------------
+Time used for this run = 841.853 second.
+Speed of this run = 1.6877e+07 atom*step/second.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Finished executing the commands in run.in.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Time used = 842.060279 s.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Finished running GPUMD.
+---------------------------------------------------------------
+

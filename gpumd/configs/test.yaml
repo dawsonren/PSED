@@ -22,6 +22,9 @@ gb_generation:
   pressure_gpa: 0         # target pressure [GPa]
   bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
   tau_p: 1000             # barostat coupling (in timesteps)
+  # control debugging plots (can be slow) and intermediate structure dumps
+  debug: False
+  dump_interval: 5000
 
 # RNEMD parameters
 rnemd:
@@ -68,6 +71,9 @@ ml:
 
 # GB specifications
 grain_boundaries:
+- axis: [1, 0, 0]
+  sigma: 25
+  plane: [0, -1, -7]
 - axis: [1, 0, 0]
   sigma: 5
   plane: [0, 1, 2]
