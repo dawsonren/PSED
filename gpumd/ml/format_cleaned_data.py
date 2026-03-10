@@ -223,6 +223,6 @@ else:
 
     df.to_csv(OUT_PATH, index=False)
     print(f"\nDataset written to {OUT_PATH}")
-    print(f"  {len(df)} rows × {len(df.columns)} columns")
+    print(f"  {len(df)} rows x {len(df.columns)} columns")
     n_with_target = df["R_K_mean"].notna().sum()
     print(f"  {n_with_target}/{len(df)} rows have rNEMD target values")

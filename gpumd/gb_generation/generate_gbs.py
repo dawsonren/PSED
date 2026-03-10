@@ -10,11 +10,12 @@ Pipeline:
 1. Load GB specifications and run parameters from a unified YAML config.
 2. Build GB structure with aimsgb (GrainBoundary + Grain.stack_grains).
    The x/y/z lengths repeated to achieve the correct BOX_SIZE
-3. Anneal with GPUMD: cooling ramp from t_start down to t_end over
+3. Relax the structure using LBFGS.
+4. Anneal with GPUMD: cooling ramp from t_start to t_end over
    total_time_ps, using npt_scr thermostat.
-4. Repeat step 3 n_runs times with different random initial velocities.
+5. Repeat step 4 n_runs times with different random initial velocities.
    All relaxed structures are saved as .traj files.
-5. A summary.csv records energies per run.
+6. A summary.csv records energies per run.
 
 File outputs:
     results/<config_name>/gb_generation/
@@ -44,10 +45,12 @@ load_dotenv()
 from aimsgb import GrainBoundary, Grain
 from ase.io import read, write
 from ase.visualize.plot import plot_atoms
-from ase.geometry.cell import cell_to_cellpar, cellpar_to_cell
+from ase.optimize import LBFGS
 
 from calorine.calculators import GPUNEP, CPUNEP
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.work_coordination import gb_label, check_gb_generation_status
 
 # ---------------------------------------------------------------------------
@@ -84,6 +87,8 @@ gb_cfg = config["gb_generation"]
 # minimum length of supercell in x/y/z axes in angstroms
 BOX_SIZE         = np.array([float(gb_cfg["x_nm"]) * 10, float(gb_cfg["y_nm"]) * 10, float(gb_cfg["z_nm"]) * 10])
 N_RUNS           = int(gb_cfg["n_runs"])
+F_MAX            = float(gb_cfg.get("f_max", 0.1))
+STEPS            = int(gb_cfg.get("steps", 500))
 T_START          = float(gb_cfg["t_start"])
 T_END            = float(gb_cfg["t_end"])
 TOTAL_TIME_PS    = float(gb_cfg["total_time_ps"])
@@ -103,7 +108,7 @@ _raw_gbs = config["grain_boundaries"]
 # sigma: -1 in the config signals a bulk-only run (no grain boundary)
 NO_GB_MODE = len(_raw_gbs) == 1 and _raw_gbs[0]["sigma"] == -1
 GB_LIST = [] if NO_GB_MODE else [
-    (tuple(entry["axis"]), entry["sigma"], tuple(entry["plane"]))
+    (tuple(entry["axis"]), int(entry["sigma"]), tuple(entry["plane"]))
     for entry in _raw_gbs
 ]
 
@@ -174,6 +179,36 @@ def build_gb_atoms(s_input, axis, sigma, plane):
     atoms.wrap()
 
     return atoms, (scale_x, scale_y, UC)
+
+
+def relax_with_lbfgs(atoms, fmax=F_MAX, steps=STEPS):
+    """
+    Relax atomic positions with LBFGS using CPUNEP.
+
+    Removes the worst of the high-energy overlaps that aimsgb introduces at
+    the grain boundary interface before handing off to the GPUMD annealing
+    step.  This keeps the MD from immediately exploding due to unphysical
+    forces.
+
+    Parameters
+    ----------
+    atoms : ase.Atoms
+        Structure to relax (will NOT be modified; a copy is returned).
+    fmax  : float
+        Force convergence threshold in eV/Å.
+    steps : int
+        Maximum number of LBFGS steps.
+
+    Returns
+    -------
+    relaxed : ase.Atoms  (calculator detached)
+    """
+    relaxed = atoms.copy()
+    relaxed.calc = CPUNEP(NEP_MODEL_FILE)
+    opt = LBFGS(relaxed, logfile=None)
+    opt.run(fmax=fmax, steps=steps)
+    relaxed.calc = None  # detach so the GPUMD calc can be attached cleanly
+    return relaxed
 
 
 def cool_with_gpumd(atoms, run_dir):
@@ -298,84 +333,6 @@ def plot_temperature_trace(run_dir, label, run_index):
           f"max |residual|={max_residual:.1f} K "
           f"(RMS < ~50 K is generally acceptable for annealing)")
 
-
-def plot_pressure_trace(run_dir, label, run_index):
-    """
-    Plot actual vs target pressure from thermo.out to validate TAU_T.
-
-    What to look for:
-      - GOOD: actual pressure remains constant around target PRESSURE_GPA with small fluctuations
-      - BAD (TAU_T too small): rapid high-frequency oscillations around the target —
-        the thermostat is overcorrecting every few steps, artificially disrupting dynamics
-      - BAD (TAU_T too large): actual temperature lags far behind the target —
-        the thermostat barely intervenes and the system drifts freely
-
-    thermo.out columns (GPUMD format):
-        T  K  U  Pxx Pyy Pzz Pyz Pxz Pxy  ax ay az  bx by bz  cx cy cz
-    The pressure is calculated as the average of the normal components: P = -(Pxx + Pyy + Pzz) / 3
-    (negative sign because GPUMD defines pressure as -1 * virial).
-    """
-    thermo_path = os.path.join(run_dir, "thermo.out")
-    if not os.path.exists(thermo_path):
-        print(f"    Warning: thermo.out not found in {run_dir}, skipping T plot.")
-        return
-
-    import pandas as pd
-    thermo = pd.read_csv(
-        thermo_path,
-        sep=r"\s+",
-        header=None,
-        names=["T", "K", "U", "Pxx", "Pyy", "Pzz", "Pyz", "Pxz", "Pxy",
-               "ax", "ay", "az", "bx", "by", "bz", "cx", "cy", "cz"],
-    )
-
-    n_thermo_steps = len(thermo)
-    # Time axis: each thermo row corresponds to THERMO_INTERVAL MD steps
-    time_ps = np.arange(n_thermo_steps) * THERMO_INTERVAL * TIMESTEP_FS / 1000.0
-
-    # Reconstruct the linear cooling ramp as the target
-    target_P = np.full(n_thermo_steps, PRESSURE_GPA)
-
-    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-    plt.suptitle(
-        f"{label} — run {run_index} pressure trace\n"
-        f"TAU_P={TAU_P:.0f} steps ({TAU_P * TIMESTEP_FS / 1000:.1f} ps coupling)",
-        fontsize=10,
-    )
-
-    # Top panel: actual vs target temperature
-    axes[0].plot(time_ps, thermo["T"], color="gold", linewidth=0.8, label="Actual T")
-    axes[0].plot(time_ps, target_P, color="steelblue", linewidth=1.5,
-                 linestyle="--", label="Target pressure")
-    axes[0].set_ylabel("Pressure [GPa]")
-    axes[0].legend(fontsize=8)
-    axes[0].set_title("Actual vs target — should track smoothly with no large oscillations or lag",
-                      fontsize=8)
-
-    # Bottom panel: residual (actual - target) — makes coupling quality obvious
-    residual = thermo["T"].values - target_P
-    axes[1].plot(time_ps, residual, color="gold", linewidth=0.8)
-    axes[1].axhline(0, color="black", linewidth=0.5, linestyle="--")
-    axes[1].set_ylabel("P_actual - P_target [GPa]")
-    axes[1].set_xlabel("Time [ps]")
-    axes[1].set_title(
-        "Residual — oscillations → TAU_P too small; persistent drift → TAU_P too large",
-        fontsize=8,
-    )
-
-    plt.tight_layout()
-    out_path = os.path.join(run_dir, "pressure_trace.png")
-    plt.savefig(out_path)
-    plt.close()
-    print(f"    Pressure trace saved to {out_path}")
-
-    # Print a quick numeric summary so you can assess without opening the plot
-    rms_residual = np.sqrt(np.mean(residual**2))
-    max_residual = np.max(np.abs(residual))
-    print(f"    TAU_P validation: RMS residual={rms_residual:.1f} K, "
-          f"max |residual|={max_residual:.1f} K "
-          f"(RMS < ~1 GPa is generally acceptable for annealing)")
-
 # ---------------------------------------------------------------------------
 # Bulk Si (no-GB) helper
 # ---------------------------------------------------------------------------
@@ -393,11 +350,20 @@ def build_bulk_atoms(s_input):
     nx = max(int(np.ceil(BOX_SIZE[0] / lengths[0])), 1)
     ny = max(int(np.ceil(BOX_SIZE[1] / lengths[1])), 1)
     nz = max(int(np.ceil(BOX_SIZE[2] / lengths[2])), 1)
+    scaling = (nx, ny, nz)
     atoms = atoms.repeat((nx, ny, nz))
+
+    # --- Clean up any tiny off-diagonal elements so it's cubic ---
+    cell = atoms.cell[:]
+    np.fill_diagonal(cell, np.diag(cell))  # keep diagonal
+    off_diag_mask = ~np.eye(3, dtype=bool)
+    cell[off_diag_mask] = 0.0
+    atoms.set_cell(cell, scale_atoms=False)
+
     atoms.pbc = True
     atoms.wrap()
 
-    return atoms
+    return atoms, scaling
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +432,13 @@ def process_gb(axis, sigma, plane, s_input, start_run=0):
             run_dir = os.path.join(out_dir, f"run_{i}")
             start_atoms = gb_atoms.copy()
 
+            # Step 4 — LBFGS pre-relaxation
+            # Insert between structure build (step 3) and GPUMD annealing (step 5).
+            # This quenches the high-energy atoms at the GB interface so the MD
+            # timestep doesn't blow up on the first few steps.
+            print(f"    Relaxing with LBFGS...")
+            start_atoms = relax_with_lbfgs(start_atoms)
+
             # Anneal with GPUMD
             cooled_atoms = cool_with_gpumd(start_atoms, run_dir=run_dir)
             calc = CPUNEP(NEP_MODEL_FILE)
@@ -474,7 +447,6 @@ def process_gb(axis, sigma, plane, s_input, start_run=0):
             print(f"    Cooling done. Energy = {energy:.6f} eV")
             if DEBUG:
                 plot_temperature_trace(run_dir, label, i)
-                plot_pressure_trace(run_dir, label, i)
 
             # Attach metadata to atoms.info so downstream scripts can read it back
             if not no_gb:
@@ -525,7 +497,7 @@ def main():
     s_input = Grain.from_mp_id("mp-149")
 
     if NO_GB_MODE:
-        process_gb(-1, None, None, s_input)
+        process_gb(None, -1, None, s_input)
     else:
         gb_status = check_gb_generation_status(args.config)
         for (axis, sigma, plane) in GB_LIST:

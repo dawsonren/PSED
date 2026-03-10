@@ -1,0 +1,52 @@
+# Compare to results in https://journals.aps.org/prb/pdf/10.1103/PhysRevB.99.064308
+# the only difference is that they use the Tersoff potential, I'm also guessing it will work with the GAP potential
+
+# paths (relative to gpumd/ root)
+nep_model: potentials/Si_GAP_nep.txt
+gpumd_exec: /home/djr2473/exec/gpumd
+
+# GB generation parameters
+gb_generation:
+  # control simulation box size (MD has heat flow over z-axis, so z-axis should be longest)
+  x_nm: 3.0
+  y_nm: 3.0
+  z_nm: 3.0
+  # control simulation length
+  total_time_ps: 10.0
+  timestep_fs: 1.0
+  # control replications
+  n_runs: 1
+  # control lbfgs step
+  f_max: 0.1
+  steps: 500
+  # control npt simulation parameters
+  t_start: 10.0           # K — annealing start temperature
+  t_end: 300.0            # K — annealing end temperature
+  tau_t: 100.0            # thermostat coupling (in timesteps)
+  pressure_gpa: 0         # target pressure [GPa]
+  bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
+  tau_p: 1000             # barostat coupling (in timesteps)
+  # control debugging plots (can be slow) and intermediate structure dumps
+  debug: True
+  dump_interval: 5000
+
+# HNEMD parameters
+hnemd:
+  # forcing values for linear response verification (kappa should be flat across these)
+  # typical range around 10-4 to 10-5 — large enough for signal, small enough for linear regime
+  forcing_values: [0.00001, 0.00002, 0.00003]
+  # control simulation length
+  timestep_fs: 1
+  production_time_ps: 2000
+  output_interval: 1000            # steps between kappa.out entries
+  # control replications
+  n_runs: 3
+  # control nvt_nhc production parameters
+  temperature_k: 300               # K — must be > Debye temp for classical phonon transport
+  tau_t: 100                       # thermostat coupling for nvt_nhc production (in timesteps)
+
+# GB specifications
+grain_boundaries:
+- axis: -1
+  sigma: -1
+  plane: -1
