@@ -1,0 +1,60 @@
+
+***************************************************************
+*                 Welcome to use GPUMD                        *
+*     (Graphics Processing Units Molecular Dynamics)          *
+*                     version 4.8                             *
+*              This is the gpumd executable                   *
+***************************************************************
+
+
+---------------------------------------------------------------
+Compiling options:
+---------------------------------------------------------------
+
+DEBUG is off: Use different PRNG seeds for different runs.
+
+---------------------------------------------------------------
+GPU information:
+---------------------------------------------------------------
+
+number of GPUs = 1
+Device id:                   0
+    Device name:             NVIDIA A100-SXM4-80GB
+    Compute capability:      8.0
+    Amount of global memory: 79.2517 GB
+    Number of SMs:           108
+
+---------------------------------------------------------------
+Started running GPUMD.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Started initializing positions and related parameters.
+---------------------------------------------------------------
+
+Number of atoms is 154560.
+Use periodic boundary conditions along x.
+Use periodic boundary conditions along y.
+Use periodic boundary conditions along z.
+Box matrix h = [a, b, c] is
+    7.3841971646e+01    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    8.2557834097e+01    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    5.1124451932e+02
+Inverse box matrix g = inv(h) is
+    1.3542433628e-02    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    1.2112720869e-02    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    1.9560111888e-03
+Do not specify initial velocities here.
+Have no grouping method.
+There is only one atom type.
+    154560 atoms of type 0.
+Initialized velocities with default T = 300 K.
+
+---------------------------------------------------------------
+Finished initializing positions and related parameters.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Started executing the commands in run.in.
