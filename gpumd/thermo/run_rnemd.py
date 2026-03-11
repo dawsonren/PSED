@@ -113,11 +113,14 @@ STEPS_PER_CYCLE  = int(rnemd_cfg["steps_per_cycle"])
 TIMESTEP_FS      = float(rnemd_cfg["timestep_fs"])
 N_CYCLES         = int(rnemd_cfg["n_cycles"])
 N_RUNS           = int(rnemd_cfg.get("n_runs", 3))
-TEMPERATURE_K    = float(rnemd_cfg["temperature_k"])
-TAU_T            = float(rnemd_cfg["tau_t"])
-PRESSURE_GPA     = float(rnemd_cfg["pressure_gpa"])
-BULK_MODULUS_GPA = float(rnemd_cfg["bulk_modulus_gpa"])
-TAU_P            = float(rnemd_cfg["tau_p"])
+ENSEMBLE         = rnemd_cfg.get("ensemble", "npt_scr").lower()
+if ENSEMBLE == "npt_scr":
+    TEMPERATURE_K    = float(rnemd_cfg["temperature_k"])
+    TAU_T            = float(rnemd_cfg["tau_t"])
+    PRESSURE_GPA     = float(rnemd_cfg["pressure_gpa"])
+    BULK_MODULUS_GPA = float(rnemd_cfg["bulk_modulus_gpa"])
+    TAU_P            = float(rnemd_cfg["tau_p"])
+assert ENSEMBLE in ["npt_scr", "nve"], f"Unsupported ensemble: {ENSEMBLE}"
 DEBUG_STRUCTURE  = bool(rnemd_cfg.get("debug_structure", False))
 DEBUG_DIAGNOSTICS = bool(rnemd_cfg.get("debug_diagnostics", True))
 
@@ -138,12 +141,17 @@ def run_one_cycle(atoms, run_dir):
     internal velocity units (Å/fs) to ASE's internal units (Å/t_ASE where
     t_ASE ≈ 10.18 fs ≈ sqrt(amu·Å²/eV)).  The exact factor is ase.units.fs.
     """
+    if ENSEMBLE == "npt_scr":
+        ensemble_params = ['npt_scr', TEMPERATURE_K, TEMPERATURE_K, TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]
+    elif ENSEMBLE == "nve":
+        ensemble_params = ['nve']
+
     md_params = [
         ("dump_position", STEPS_PER_CYCLE),
         ("dump_velocity", STEPS_PER_CYCLE),
         ('dump_exyz', [STEPS_PER_CYCLE, 1]),
         ("time_step", TIMESTEP_FS),
-        ("ensemble", ['npt_scr', TEMPERATURE_K, TEMPERATURE_K, TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]),
+        ("ensemble", ensemble_params),
         ("run", STEPS_PER_CYCLE),
     ]
 

@@ -40,6 +40,7 @@ rnemd:
   # control replications
   n_runs: 3                # independent rNEMD simulations per structure (for uncertainty)
   # control npt simulation parameters
+  ensemble: "npt_scr"
   temperature_k: 675       # K — must be > Debye temp for classical phonon transport
   tau_t: 20                # thermostat coupling (in timesteps)  
   pressure_gpa: 0          # target pressure [GPa]
