@@ -1,0 +1,60 @@
+
+***************************************************************
+*                 Welcome to use GPUMD                        *
+*     (Graphics Processing Units Molecular Dynamics)          *
+*                     version 4.8                             *
+*              This is the gpumd executable                   *
+***************************************************************
+
+
+---------------------------------------------------------------
+Compiling options:
+---------------------------------------------------------------
+
+DEBUG is off: Use different PRNG seeds for different runs.
+
+---------------------------------------------------------------
+GPU information:
+---------------------------------------------------------------
+
+number of GPUs = 1
+Device id:                   0
+    Device name:             NVIDIA A100-SXM4-80GB
+    Compute capability:      8.0
+    Amount of global memory: 79.2517 GB
+    Number of SMs:           108
+
+---------------------------------------------------------------
+Started running GPUMD.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Started initializing positions and related parameters.
+---------------------------------------------------------------
+
+Number of atoms is 1728.
+Use periodic boundary conditions along x.
+Use periodic boundary conditions along y.
+Use periodic boundary conditions along z.
+Box matrix h = [a, b, c] is
+    3.2786479000e+01    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.2786479000e+01    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    3.2786479000e+01
+Inverse box matrix g = inv(h) is
+    3.0500377915e-02    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.0500377915e-02    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    3.0500377915e-02
+Specify initial velocities here.
+Have no grouping method.
+There is only one atom type.
+    1728 atoms of type 0.
+Initialized velocities with data in model.xyz.
+
+---------------------------------------------------------------
+Finished initializing positions and related parameters.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Started executing the commands in run.in.

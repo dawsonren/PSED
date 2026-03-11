@@ -22,6 +22,9 @@ gb_generation:
   pressure_gpa: 0         # target pressure [GPa]
   bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
   tau_p: 1000             # barostat coupling (in timesteps)
+  # control lbfgs step
+  f_max: 10
+  steps: 0
   # control debugging plots (can be slow) and intermediate structure dumps
   debug: False
   dump_interval: 50000

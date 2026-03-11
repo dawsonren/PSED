@@ -19,10 +19,10 @@ GPU information:
 
 number of GPUs = 1
 Device id:                   0
-    Device name:             NVIDIA H100 80GB HBM3
-    Compute capability:      9.0
-    Amount of global memory: 79.1896 GB
-    Number of SMs:           132
+    Device name:             NVIDIA A100-SXM4-80GB
+    Compute capability:      8.0
+    Amount of global memory: 79.2517 GB
+    Number of SMs:           108
 
 ---------------------------------------------------------------
 Started running GPUMD.
@@ -100,3 +100,25 @@ Run 100000 steps.
     70000 steps completed.
     80000 steps completed.
     90000 steps completed.
+    100000 steps completed.
+
+---------------------------------------------------------------
+Time used for this run = 1223.77 second.
+Speed of this run = 9.00562e+06 atom*step/second.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Finished executing the commands in run.in.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Time used = 1224.064548 s.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Finished running GPUMD.
+---------------------------------------------------------------
+

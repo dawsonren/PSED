@@ -438,6 +438,7 @@ def process_gb(axis, sigma, plane, s_input, start_run=0):
             # timestep doesn't blow up on the first few steps.
             print(f"    Relaxing with LBFGS...")
             start_atoms = relax_with_lbfgs(start_atoms)
+            print(f"    Finished relaxing...")
 
             # Anneal with GPUMD
             cooled_atoms = cool_with_gpumd(start_atoms, run_dir=run_dir)
