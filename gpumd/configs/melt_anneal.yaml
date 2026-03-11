@@ -1,0 +1,91 @@
+# Melting test
+
+# paths (relative to gpumd/ root)
+nep_model: potentials/Si_GAP_nep.txt
+gpumd_exec: /home/djr2473/exec/gpumd
+
+# GB generation parameters
+gb_generation:
+  # control simulation box size (MD has heat flow over z-axis)
+  x_nm: 2.5
+  y_nm: 2.5
+  z_nm: 10
+  # control simulation length
+  total_time_ps: 1500
+  timestep_fs: 1.0
+  # control replications
+  n_runs: 3
+  # control npt simulation parameters
+  t_start: 4000.0         # K — annealing start temperature
+  t_end: 25.0             # K — annealing end temperature
+  tau_t: 100.0            # thermostat coupling (in timesteps)
+  pressure_gpa: 0         # target pressure [GPa]
+  bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
+  tau_p: 1000             # barostat coupling (in timesteps)
+  # control debugging plots (can be slow) and intermediate structure dumps
+  debug: True
+  dump_interval: 50000
+
+# RNEMD parameters
+rnemd:
+  # control rnemd setup
+  nbins: 32                # must be even (symmetric PBC paths)
+  # control simulation length, total steps = n_cycles * steps_per_cycle
+  timestep_fs: 1
+  n_cycles: 100                    # number of production cycles (velocity swaps after each)
+  steps_per_cycle: 10000           # controls the frequency of velocity swaps
+  # control replications
+  n_runs: 3                # independent rNEMD simulations per structure (for uncertainty)
+  # control npt simulation parameters
+  temperature_k: 675       # K — must be > Debye temp for classical phonon transport
+  tau_t: 20                # thermostat coupling (in timesteps)  
+  pressure_gpa: 0          # target pressure [GPa]
+  bulk_modulus_gpa: 100    # bulk modulus estimate for barostat [GPa]
+  tau_p: 200               # barostat coupling (in timesteps)
+  # control debugging plots (can be slow)
+  debug_structure: False
+  debug_diagnostics: True
+
+# HNEMD parameters
+hnemd:
+  # forcing values for linear response verification (kappa should be flat across these)
+  # typical range around 10-4 to 10-5 — large enough for signal, small enough for linear regime
+  forcing_values: [0.0001, 0.00005, 0.00001]
+  # control simulation length
+  timestep_fs: 1
+  production_time_ps: 500
+  output_interval: 1000            # steps between kappa.out entries
+  # control replications
+  n_runs: 1
+  # control nvt_nhc production parameters
+  temperature_k: 675               # K — must be > Debye temp for classical phonon transport
+  tau_t: 100                       # thermostat coupling for nvt_nhc production (in timesteps)
+
+# ML descriptor parameters
+ml:
+  bond_cutoff: 3.0          # Å — neighbour cutoff for bond angle/length descriptors
+  rdf_cutoff: 10.0          # Å — cutoff for radial distribution function
+  rdf_nbins: 200            # bins for g(r)
+  soap_cutoff: 6.0          # Å — SOAP cutoff radius
+  soap_n_max: 9             # SOAP radial basis functions
+  soap_l_max: 9             # SOAP max angular degree
+  dihedral_nbins: 36        # bins for dihedral angle entropy (10° per bin)
+  gb_dist_thresholds: [5.0, 10.0]  # Å — distance from GB plane for atom subsets
+
+# GB specifications
+grain_boundaries:
+- axis: [1, 0, 0]
+  sigma: 5
+  plane: [0, 1, 2]
+- axis: [1, 0, 0]
+  sigma: 37
+  plane: [0, 1, -6]
+- axis: [1, 0, 0]
+  sigma: 17
+  plane: [0, -4, -1]
+- axis: [1, 0, 0]
+  sigma: 25
+  plane: [0, -4, 3]
+- axis: [1, 0, 0]
+  sigma: 41
+  plane: [0, -5, 4]

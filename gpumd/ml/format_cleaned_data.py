@@ -120,12 +120,32 @@ for entry in config["grain_boundaries"]:
 print(f"\nConfig: {yaml_path.name}  |  {len(gb_entries)} unique GBs")
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Column ordering (applied consistently on every write)
 # ---------------------------------------------------------------------------
 
-records = []
+META_COLS   = ["gb_label", "axis_x", "axis_y", "axis_z",
+               "sigma", "plane_x", "plane_y", "plane_z"]
+TARGET_COLS = ["R_K_mean", "R_K_std", "kappa_mean", "kappa_std", "J_mean", "J_std"]
+
+# ---------------------------------------------------------------------------
+# Main loop — write one row per GB as it completes
+# ---------------------------------------------------------------------------
+
+# Resume from existing file if present, otherwise start fresh
+if OUT_PATH.exists():
+    df_existing = pd.read_csv(OUT_PATH)
+    already_done = set(df_existing["gb_label"].tolist())
+    n_written = len(df_existing)
+    print(f"Resuming from {OUT_PATH} ({n_written} rows already present)")
+else:
+    already_done = set()
+    n_written = 0
 
 for axis, sigma, plane, label in gb_entries:
+    if label in already_done:
+        print(f"  SKIP {label}: already in dataset")
+        continue
+
     gb_gen_dir = GB_GEN_DIR / label
 
     # --- Find lowest-energy relaxed structure ---
@@ -203,26 +223,25 @@ for axis, sigma, plane, label in gb_entries:
         for col in ["R_K_mean", "R_K_std", "kappa_mean", "kappa_std", "J_mean", "J_std"]:
             row[col] = np.nan
 
-    records.append(row)
+    # Enforce column order: metadata | descriptors | targets
+    desc_cols = [c for c in row if c not in META_COLS and c not in TARGET_COLS]
+    ordered_cols = META_COLS + desc_cols + TARGET_COLS
+    df_row = pd.DataFrame([row])[ordered_cols]
+
+    write_header = not OUT_PATH.exists()
+    df_row.to_csv(OUT_PATH, mode="a", index=False, header=write_header)
+    n_written += 1
+    print(f"    -> written to {OUT_PATH} ({n_written} rows so far)")
 
 # ---------------------------------------------------------------------------
-# Assemble and write CSV
+# Summary
 # ---------------------------------------------------------------------------
 
-if not records:
+if n_written == 0:
     print("\nNo completed structures found — dataset is empty.")
 else:
-    df = pd.DataFrame(records)
-
-    # Enforce column order: metadata | descriptors | targets
-    meta_cols   = ["gb_label", "axis_x", "axis_y", "axis_z",
-                   "sigma", "plane_x", "plane_y", "plane_z"]
-    target_cols = ["R_K_mean", "R_K_std", "kappa_mean", "kappa_std", "J_mean", "J_std"]
-    desc_cols   = [c for c in df.columns if c not in meta_cols and c not in target_cols]
-    df = df[meta_cols + desc_cols + target_cols]
-
-    df.to_csv(OUT_PATH, index=False)
+    df_final = pd.read_csv(OUT_PATH)
     print(f"\nDataset written to {OUT_PATH}")
-    print(f"  {len(df)} rows x {len(df.columns)} columns")
-    n_with_target = df["R_K_mean"].notna().sum()
-    print(f"  {n_with_target}/{len(df)} rows have rNEMD target values")
+    print(f"  {len(df_final)} rows x {len(df_final.columns)} columns")
+    n_with_target = df_final["R_K_mean"].notna().sum()
+    print(f"  {n_with_target}/{len(df_final)} rows have rNEMD target values")
