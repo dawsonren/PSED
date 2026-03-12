@@ -10,16 +10,17 @@ rnemd:
   nbins: 50                # must be even (symmetric PBC paths)
   # control simulation length, total steps = n_cycles * steps_per_cycle
   timestep_fs: 1
-  n_cycles: 1000                # number of production cycles (velocity swaps after each)
+  n_cycles: 100                # number of production cycles (velocity swaps after each)
   steps_per_cycle: 100           # controls the frequency of velocity swaps
   # control replications
-  n_runs: 3                # independent rNEMD simulations per structure (for uncertainty)
+  n_runs: 1                # independent rNEMD simulations per structure (for uncertainty)
   # control simulation parameters
   ensemble: "nve"
   temperature_k: 675
   # control debugging plots (can be slow)
   debug_structure: False
   debug_diagnostics: True
+  include_movie: True
 
 # GB specifications
 grain_boundaries:

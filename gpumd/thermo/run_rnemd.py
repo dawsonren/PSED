@@ -123,6 +123,7 @@ if ENSEMBLE == "npt_scr":
 assert ENSEMBLE in ["npt_scr", "nve"], f"Unsupported ensemble: {ENSEMBLE}"
 DEBUG_STRUCTURE  = bool(rnemd_cfg.get("debug_structure", False))
 DEBUG_DIAGNOSTICS = bool(rnemd_cfg.get("debug_diagnostics", True))
+INCLUDE_MOVIE     = bool(rnemd_cfg.get("include_movie", False))
 
 # Si atomic mass in amu (used for energy flux calculation)
 M_SI_AMU = 28.085
@@ -178,7 +179,10 @@ def run_one_cycle(atoms, run_dir):
 
     # At the end of run_one_cycle, after reading velocities
     # this prevents us from having output files that get longer and longer!
-    for fname in ["velocity.out", "position.out", "dump.xyz"]:
+    files_to_remove = ["velocity.out", "position.out", "dump.xyz"]
+    if not INCLUDE_MOVIE:
+        files_to_remove.append("movie.xyz")
+    for fname in files_to_remove:
         fpath = os.path.join(run_dir, fname)
         if os.path.exists(fpath):
             os.remove(fpath)
