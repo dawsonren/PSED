@@ -1,16 +1,29 @@
 """
-movie_ovito.py  –  Render a GPUMD movie.xyz as a video using OVITO.
+movie_ovito.py  -  Render a GPUMD movie.xyz as a video using OVITO.
 
 Usage:
     python movie_ovito.py --file results/nve_test/rnemd/100_sigma13_0-32/structure_0/run_0/movie.xyz
 
-    # Custom output path, resolution, and frame rate:
-    python movie_ovito.py --file results/.../movie.xyz --output out.mp4 --width 1920 --height 540 --fps 15
+    # Custom output path, resolution, frame rate, GB focus, and cross-section:
+    python movie_ovito.py --file results/.../movie.xyz --output out.mp4 \\
+        --width 1920 --height 540 --fps 15 --focus 50 --slice-thickness 5
+
+Notes:
+    The Z-axis (thermal-gradient / GB-normal direction) is rendered horizontally
+    left-to-right. Internally the movie is rendered in portrait orientation and
+    then rotated 90 ° clockwise via ffmpeg, so ffmpeg must be on PATH.
+
+    --focus N   : shows only ±N Å around the grain boundary (GB sits at z=L_z/2).
+    --slice-thickness T : keeps only atoms within a T-Å-thick slab at y=L_y/2
+                         so the GB structure is visible without overlapping bulk.
+                         Set to 0 to disable the cross-section (default: 5).
 """
 
 import argparse
 import os
+import subprocess
 import sys
+import tempfile
 
 
 def parse_args():
@@ -24,6 +37,10 @@ def parse_args():
     p.add_argument("--fps",    type=int, default=10,   help="Frames per second      (default: 10)")
     p.add_argument("--every",  type=int, default=1,
                    help="Render every Nth frame to slim down long trajectories (default: 1 = all)")
+    p.add_argument("--focus", type=float, default=None,
+                   help="Zoom to ±N Å around the grain boundary (GB at z=L_z/2)")
+    p.add_argument("--slice-thickness", type=float, default=5.0, dest="slice_thickness",
+                   help="Cross-section slab thickness in Å at y=L_y/2 (default: 5.0). Set 0 to disable.")
     return p.parse_args()
 
 
@@ -47,9 +64,11 @@ def main():
 
     # ── OVITO imports (heavy – deferred until paths are validated) ───────────
     try:
-        from ovito.io  import import_file
-        from ovito.vis import Viewport, RenderSettings
-    except ImportError:
+        from ovito.io        import import_file
+        from ovito.modifiers import SliceModifier
+        from ovito.vis       import Viewport
+    except ImportError as e:
+        print(e)
         sys.exit("ERROR: ovito is not importable. Activate the correct conda/venv environment.")
 
     # ── Build pipeline ────────────────────────────────────────────────────────
@@ -59,28 +78,72 @@ def main():
     # Count total frames so we can apply --every
     n_frames = pipeline.source.num_frames
     print(f"Total frames in trajectory: {n_frames}")
+    print(f"Frames to render: {len(range(0, n_frames, args.every))}  (every {args.every})")
 
-    frame_list = list(range(0, n_frames, args.every))
-    print(f"Frames to render: {len(frame_list)}  (every {args.every})")
+    # ── Read cell geometry from frame 0 ───────────────────────────────────────
+    # cell.matrix is a 3×4 array; columns = [a_vec, b_vec, c_vec, origin]
+    data   = pipeline.compute(0)
+    m      = data.cell.matrix
+    origin = m[:, 3]
+    lx, ly, lz = m[0, 0], m[1, 1], m[2, 2]
+    x_mid  = origin[0] + lx / 2
+    y_mid  = origin[1] + ly / 2
+    z_mid  = origin[2] + lz / 2
+
+    # ── Cross-section slice at y_mid ─────────────────────────────────────────
+    if args.slice_thickness > 0:
+        pipeline.modifiers.append(SliceModifier(
+            normal=(0, 1, 0),
+            distance=y_mid,
+            slab_width=args.slice_thickness,
+        ))
+        print(f"Cross-section: {args.slice_thickness} Å slab at y={y_mid:.2f} Å")
 
     # ── Set up viewport ───────────────────────────────────────────────────────
-    # For RNEMD cells the z-axis is very long; look along Y so we see the
-    # full thermal-gradient direction (z) vs the lateral direction (x).
-    vp = Viewport()
-    vp.type = Viewport.Type.Front   # camera looks along -Y, showing X-Z plane
+    # We want Z (thermal-gradient axis) to run left-to-right in the final movie.
+    # OVITO's world Z is always "up" in any view, so we cannot natively roll the
+    # camera. Workaround: render in portrait (dims swapped, Z vertical), then
+    # rotate 90 ° clockwise with ffmpeg so Z becomes horizontal.
+    render_w = args.height   # portrait width  = desired final height
+    render_h = args.width    # portrait height = desired final width
 
-    # Zoom to fit the whole cell into view
-    vp.zoom_all(size=(args.width, args.height))
+    vp = Viewport(type=Viewport.Type.Ortho)
+    vp.camera_dir = (0, -1, 0)   # look along −Y → see X–Z plane
 
-    # ── Render ────────────────────────────────────────────────────────────────
-    rs = RenderSettings(
-        filename=out_path,
-        size=(args.width, args.height),
-        frames_per_second=args.fps,
-    )
+    if args.focus is not None:
+        # Center camera on the GB (z_mid) and set FOV to show ±focus in Z.
+        # For orthographic, fov is the visible height in world units.
+        vp.camera_pos = (x_mid, origin[1] + ly + 1000, z_mid)
+        vp.fov        = 2 * args.focus
+        print(f"Focus: ±{args.focus} Å around GB at z={z_mid:.2f} Å")
+    else:
+        vp.zoom_all(size=(render_w, render_h))
+
+    # ── Render portrait, then rotate to landscape (Z horizontal) ─────────────
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(out_path)[1])
+    os.close(tmp_fd)
 
     print("Rendering …")
-    vp.render_anim(rs, frame_list=frame_list)
+    vp.render_anim(
+        filename=tmp_path,
+        size=(render_w, render_h),
+        fps=args.fps,
+        every_nth=args.every,
+    )
+
+    # transpose=1: 90 ° clockwise — what was "up" (high Z) moves to the right,
+    # so Z increases left-to-right in the final landscape movie.
+    print("Rotating movie so Z-axis runs left-to-right …")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_path, "-vf", "transpose=1", out_path],
+            check=True, capture_output=True,
+        )
+        os.unlink(tmp_path)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        os.rename(tmp_path, out_path)
+        print(f"Warning: ffmpeg rotation failed ({exc}); portrait video saved instead.")
+
     print(f"Done. Movie written to: {out_path}")
 
 

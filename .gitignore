@@ -13,6 +13,7 @@ __pycache__/
 *.log
 *.in
 *.out
+*.mp4
 
 # Distribution / packaging
 .Python
