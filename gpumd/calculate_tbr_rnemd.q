@@ -2,11 +2,11 @@
 #SBATCH --account=p33174
 #SBATCH --partition=gengpu
 #SBATCH --gres=gpu:1
-#SBATCH --time=20:00:00
+#SBATCH --time=4:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
-#SBATCH --job-name=gpumd-calculate-tbr-rnemd
+#SBATCH --job-name=gpumd-calculate-tbr-rnemd-nve-test
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=dawsonren@u.northwestern.edu
 
@@ -22,5 +22,5 @@ source activate chem
 cd gpumd
 PYTHON=/home/djr2473/.conda/envs/chem/bin/python
 
-echo "Running config: small_box.yaml"
-$PYTHON thermo/run_rnemd.py --config configs/small_box.yaml
+echo "Running config: nve_test.yaml"
+$PYTHON thermo/run_rnemd.py --config configs/nve_test.yaml

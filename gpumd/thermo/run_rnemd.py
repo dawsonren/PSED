@@ -114,8 +114,8 @@ TIMESTEP_FS      = float(rnemd_cfg["timestep_fs"])
 N_CYCLES         = int(rnemd_cfg["n_cycles"])
 N_RUNS           = int(rnemd_cfg.get("n_runs", 3))
 ENSEMBLE         = rnemd_cfg.get("ensemble", "npt_scr").lower()
+TEMPERATURE_K    = float(rnemd_cfg["temperature_k"])
 if ENSEMBLE == "npt_scr":
-    TEMPERATURE_K    = float(rnemd_cfg["temperature_k"])
     TAU_T            = float(rnemd_cfg["tau_t"])
     PRESSURE_GPA     = float(rnemd_cfg["pressure_gpa"])
     BULK_MODULUS_GPA = float(rnemd_cfg["bulk_modulus_gpa"])
@@ -155,6 +155,11 @@ def run_one_cycle(atoms, run_dir):
         ("run", STEPS_PER_CYCLE),
     ]
 
+    # Convert ASE velocities (Å/t_ASE) to GPUMD units (Å/fs).
+    # Calorine writes vel to model.xyz without converting, but GPUMD
+    # reads vel as Å/fs.  Without this, velocities are ~10x too large.
+    atoms.set_velocities(atoms.get_velocities() * units.fs)
+
     # NOTE: Must re-create calculator each cycle (calorine limitation)
     calc = GPUNEP(
         NEP_MODEL_FILE,
@@ -170,6 +175,13 @@ def run_one_cycle(atoms, run_dir):
     vel_path = os.path.join(run_dir, "velocity.out")
     vels = pd.read_csv(vel_path, sep=" ", header=None).iloc[-len(atoms):, :]
     atoms.set_velocities(vels.values / units.fs)  # GPUMD (Å/fs) -> ASE units
+
+    # At the end of run_one_cycle, after reading velocities
+    # this prevents us from having output files that get longer and longer!
+    for fname in ["velocity.out", "position.out", "dump.xyz"]:
+        fpath = os.path.join(run_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
 
     return atoms
 
@@ -399,11 +411,6 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         run_atoms = atoms.copy()
         MaxwellBoltzmannDistribution(run_atoms, temperature_K=TEMPERATURE_K)
         print(f"    Initial T = {run_atoms.get_temperature():.1f} K")
-
-        # Convert ASE velocities (Å/t_ASE) to GPUMD units (Å/fs).
-        # Calorine writes vel to model.xyz without converting, but GPUMD
-        # reads vel as Å/fs.  Without this, velocities are ~10x too large.
-        run_atoms.set_velocities(run_atoms.get_velocities() * units.fs)
 
         # Bin atoms along the stacking direction (ASE cell axis 2)
         scaled_z = [a.scaled_position[2] for a in run_atoms]
