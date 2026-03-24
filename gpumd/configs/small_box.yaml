@@ -49,6 +49,7 @@ rnemd:
   # control debugging plots (can be slow)
   debug_structure: False
   debug_diagnostics: True
+  debug_animation: False   # save temperature_profile.mp4 (one line per frame)
 
 # HNEMD parameters
 hnemd:

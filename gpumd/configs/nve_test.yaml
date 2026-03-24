@@ -10,7 +10,7 @@ rnemd:
   nbins: 50                # must be even (symmetric PBC paths)
   # control simulation length, total steps = n_cycles * steps_per_cycle
   timestep_fs: 1
-  n_cycles: 100                # number of production cycles (velocity swaps after each)
+  n_cycles: 10000                # number of production cycles (velocity swaps after each)
   steps_per_cycle: 100           # controls the frequency of velocity swaps
   # control replications
   n_runs: 1                # independent rNEMD simulations per structure (for uncertainty)
@@ -20,7 +20,8 @@ rnemd:
   # control debugging plots (can be slow)
   debug_structure: False
   debug_diagnostics: True
-  include_movie: True
+  include_movie: False
+  debug_animation: True   # save temperature_profile.mp4 (one line per frame)
 
 # GB specifications
 grain_boundaries:

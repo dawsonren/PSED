@@ -47,8 +47,6 @@ import yaml
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib import cm
-from matplotlib.colors import Normalize
 from tqdm import tqdm
 
 from ase import units
@@ -67,6 +65,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.muller_plathe import swap_velocities, bin_atoms
 from utils.rnemd_stats import check_steady_state, aggregate_run_results, format_result_summary
+from utils.rnemd_plots import plot_temperature_profile, plot_temperature_profile_animated
 
 # ---------------------------------------------------------------------------
 # CLI and configuration
@@ -121,9 +120,10 @@ if ENSEMBLE == "npt_scr":
     BULK_MODULUS_GPA = float(rnemd_cfg["bulk_modulus_gpa"])
     TAU_P            = float(rnemd_cfg["tau_p"])
 assert ENSEMBLE in ["npt_scr", "nve"], f"Unsupported ensemble: {ENSEMBLE}"
-DEBUG_STRUCTURE  = bool(rnemd_cfg.get("debug_structure", False))
+DEBUG_STRUCTURE   = bool(rnemd_cfg.get("debug_structure", False))
 DEBUG_DIAGNOSTICS = bool(rnemd_cfg.get("debug_diagnostics", True))
 INCLUDE_MOVIE     = bool(rnemd_cfg.get("include_movie", False))
+INCLUDE_ANIMATION = bool(rnemd_cfg.get("debug_animation", False))
 
 # Si atomic mass in amu (used for energy flux calculation)
 M_SI_AMU = 28.085
@@ -275,98 +275,6 @@ def compute_tbr_and_kappa(temps_avg, velocities_hc, bin_centers_angstrom,
 
 
 # ---------------------------------------------------------------------------
-# Diagnostic plots
-# ---------------------------------------------------------------------------
-
-def plot_temperature_profile(temps_times, bin_centers, result, out_dir,
-                              label, run_index, converged, max_dev):
-    """
-    Plot the evolving and converged temperature profile with the linear fits
-    used to extract ΔT and kappa.
-
-    What to look for:
-      - Converged profile: later cycles (darker colour) should overlap with
-        the cumulative average, indicating steady state.
-      - Clear linear regions on each side of the GB — curved profiles suggest
-        the system hasn't equilibrated or the box is too short.
-      - Visible discontinuity at x_GB: if there's no step, TBR is very small
-        or the GB was not preserved (check RDF and atom positions).
-    """
-    n_cycles = len(temps_times)
-    cumulative_avg = np.cumsum(temps_times, axis=0) / np.arange(1, n_cycles + 1)[:, None]
-
-    cmap = cm.Oranges
-    norm = Normalize(vmin=0, vmax=n_cycles)
-
-    fig, axes = plt.subplots(3, 1, figsize=(10, 12))
-    plt.subplots_adjust(hspace=0.35)
-    fig.suptitle(f"{label} — run {run_index}", fontsize=12)
-
-    # Panel 1: Per-cycle temperature profiles
-    for i, cycle_temps in enumerate(temps_times):
-        axes[0].plot(bin_centers, cycle_temps, marker="o", markersize=2,
-                     linewidth=0.8, color=cmap(norm(i)), alpha=0.7)
-    axes[0].set_ylabel("Temperature [K]")
-    axes[0].set_title("Per-cycle temperature profiles (light→dark = early→late)")
-    axes[0].axvline(bin_centers[COLD_BIN], color="blue", linestyle="--",
-                    linewidth=0.8, label="cold bin")
-    axes[0].axvline(bin_centers[HOT_BIN], color="red", linestyle="--",
-                    linewidth=0.8, label="hot bin")
-    axes[0].legend(fontsize=8)
-
-    # Panel 2: Cumulative average + linear fits
-    for i, avg in enumerate(cumulative_avg):
-        axes[1].plot(bin_centers, avg, marker="o", markersize=2,
-                     linewidth=0.8, color=cmap(norm(i)))
-
-    # Overlay final linear fits
-    left_fit = result["left_fit"]
-    right_fit = result["right_fit"]
-    gb_bin = NBINS // 2
-    margin = 1
-
-    x_left = bin_centers[COLD_BIN + margin : gb_bin]
-    x_right = bin_centers[gb_bin : HOT_BIN - margin]
-    axes[1].plot(x_left, np.polyval(left_fit, x_left), color="blue",
-                 linewidth=2, linestyle="--", label="left bulk fit")
-    axes[1].plot(x_right, np.polyval(right_fit, x_right), color="red",
-                 linewidth=2, linestyle="--", label="right bulk fit")
-
-    # Mark ΔT at GB
-    x_gb = bin_centers[gb_bin]
-    T_l = np.polyval(left_fit, x_gb)
-    T_r = np.polyval(right_fit, x_gb)
-    axes[1].annotate(
-        f"ΔT = {result['delta_T']:.1f} K",
-        xy=(x_gb, (T_l + T_r) / 2), fontsize=9,
-        arrowprops=dict(arrowstyle="->"), xytext=(x_gb + 5, (T_l + T_r) / 2 + 20),
-    )
-    axes[1].axvline(x_gb, color="green", linestyle=":", linewidth=0.8, label="GB plane")
-    axes[1].set_ylabel("Cumulative avg T [K]")
-    axes[1].set_title(
-        f"Converged profile — κ = {result['kappa_SI']:.2f} W/(m·K), "
-        f"R_K = {result['R_K_SI']:.3e} K·m²/W"
-    )
-    axes[1].legend(fontsize=8)
-
-    # Panel 3: Steady-state convergence
-    window = max(int(n_cycles * 0.25), 1)
-    cycle_indices = np.arange(n_cycles)
-    per_cycle_mean_T = np.mean(temps_times, axis=1)  # mean T across bins per cycle
-    axes[2].plot(cycle_indices, per_cycle_mean_T, color="tomato", linewidth=0.8)
-    axes[2].axhline(np.mean(per_cycle_mean_T[-window:]), color="steelblue",
-                    linestyle="--", linewidth=1.5, label=f"last {window} cycle avg")
-    conv_str = "CONVERGED" if converged else f"NOT converged (max dev = {max_dev:.1f} K)"
-    axes[2].set_title(f"Steady-state check: {conv_str}", fontsize=10)
-    axes[2].set_xlabel("Cycle")
-    axes[2].set_ylabel("Mean bin T [K]")
-    axes[2].legend(fontsize=8)
-
-    plt.savefig(os.path.join(out_dir, "temperature_profile.png"), dpi=150)
-    plt.close()
-
-
-# ---------------------------------------------------------------------------
 # Per-structure RNEMD runner
 # ---------------------------------------------------------------------------
 
@@ -442,6 +350,11 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         temps_times = np.zeros((N_CYCLES, NBINS))
         velocities_hc = np.zeros((N_CYCLES, 2))
 
+        # Open CSV for incremental bin temperature logging
+        bin_temps_csv_path = os.path.join(run_dir, "bin_temps.csv")
+        with open(bin_temps_csv_path, "w", newline="") as f_csv:
+            csv.writer(f_csv).writerow(["cycle"] + [f"bin_{i}" for i in range(NBINS)])
+
         for cycle in (pbar := tqdm(range(N_CYCLES))):
             run_atoms = run_one_cycle(run_atoms, run_dir)
 
@@ -454,6 +367,10 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
             # Record bin temperatures
             for b_idx, atom_indices in enumerate(binned):
                 temps_times[cycle, b_idx] = run_atoms[atom_indices].get_temperature()
+
+            # Append this cycle's bin temps to CSV
+            with open(bin_temps_csv_path, "a", newline="") as f_csv:
+                csv.writer(f_csv).writerow([cycle] + list(temps_times[cycle]))
 
             pbar.set_description(f"      cycle {cycle + 1}/{N_CYCLES}, T = {run_atoms.get_temperature():.1f} K")
 
@@ -497,6 +414,13 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
             plot_temperature_profile(
                 temps_times, bin_centers, result, run_dir,
                 gb_label_str, run_idx, converged, max_dev,
+                cold_bin=COLD_BIN, hot_bin=HOT_BIN, nbins=NBINS,
+            )
+        if INCLUDE_ANIMATION:
+            plot_temperature_profile_animated(
+                temps_times, bin_centers, run_dir,
+                gb_label_str, run_idx,
+                cold_bin=COLD_BIN, hot_bin=HOT_BIN, nbins=NBINS,
             )
 
     # Aggregate across runs

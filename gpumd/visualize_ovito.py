@@ -137,6 +137,6 @@ def plot_gb_crosssection(data, slab_thickness: float = 5.0, save_path: str | Non
 # ── Entry point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    xyz  = traj_to_extxyz("results/small_box/gb_generation/110_sigma17_-22-3/run_0/structure.traj", "bicrystal.xyz", frame=-1)
+    xyz  = traj_to_extxyz("results/small_box/gb_generation/111_sigma21_1-54/run_0/structure.traj", "bicrystal.xyz", frame=-1)
     pipe, data = analyze_gb(xyz, export_path="gb_atoms.xyz")
     plot_gb_crosssection(data, slab_thickness=5.0, save_path="gb_crosssection.png")
