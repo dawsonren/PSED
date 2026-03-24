@@ -1,7 +1,7 @@
-# Create 50nm length GBs for testing
+# Try SW potential
 
 # paths (relative to gpumd/ root)
-nep_model: potentials/Si_GAP_nep.txt
+nep_model: potentials/Si.sw
 gpumd_exec: /home/djr2473/exec/gpumd
 
 # GB generation parameters
