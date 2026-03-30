@@ -2,7 +2,7 @@
 #SBATCH --account=p33174
 #SBATCH --partition=gengpu
 #SBATCH --gres=gpu:1
-#SBATCH --time=4:00:00
+#SBATCH --time=10:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
@@ -22,5 +22,6 @@ source activate chem
 cd gpumd
 PYTHON=/home/djr2473/.conda/envs/chem/bin/python
 
-echo "Running config: nve_test.yaml"
-$PYTHON thermo/run_rnemd.py --config configs/nve_test.yaml
+echo "Running config: nve_test_small.yaml"
+# $PYTHON gb_generation/generate_gbs.py --config configs/nve_test_small.yaml
+$PYTHON thermo/run_rnemd.py --config configs/nve_test_small.yaml

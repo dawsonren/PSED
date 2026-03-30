@@ -22,7 +22,7 @@ gb_generation:
   pressure_gpa: 0         # target pressure [GPa]
   bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
   tau_p: 1000             # barostat coupling (in timesteps)
-  # control lbfgs step
+  # control lbfgs step (skip)
   f_max: 10
   steps: 0
   # control debugging plots (can be slow) and intermediate structure dumps
@@ -35,10 +35,11 @@ rnemd:
   nbins: 50                # must be even (symmetric PBC paths)
   # control simulation length, total steps = n_cycles * steps_per_cycle
   timestep_fs: 1
-  n_cycles: 1000                # number of production cycles (velocity swaps after each)
+  n_warmup_cycles: 1000          # warmup cycles to build gradient before recording data
+  n_cycles: 500                  # number of production cycles (velocity swaps after each)
   steps_per_cycle: 100           # controls the frequency of velocity swaps
   # control replications
-  n_runs: 1                # independent rNEMD simulations per structure (for uncertainty)
+  n_runs: 5                # independent rNEMD simulations per structure (for uncertainty)
   # control simulation parameters
   ensemble: "nve"
   temperature_k: 675
@@ -50,9 +51,6 @@ rnemd:
 
 # GB specifications
 grain_boundaries:
-- axis: [1, 0, 0]
-  sigma: 5
-  plane: [0, 1, 2]
 - axis: [1, 0, 0]
   sigma: 13
   plane: [0, -3, 2]

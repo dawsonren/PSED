@@ -37,7 +37,6 @@ Kapitza resistance: R_K = ΔT_GB / J
 import os
 import csv
 import argparse
-import glob
 import warnings
 from pathlib import Path
 
@@ -66,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.muller_plathe import swap_velocities, bin_atoms
 from utils.rnemd_stats import check_steady_state, aggregate_run_results, format_result_summary
 from utils.rnemd_plots import plot_temperature_profile, plot_temperature_profile_animated
+from utils.work_coordination import gb_label
 
 # ---------------------------------------------------------------------------
 # CLI and configuration
@@ -124,6 +124,16 @@ DEBUG_STRUCTURE   = bool(rnemd_cfg.get("debug_structure", False))
 DEBUG_DIAGNOSTICS = bool(rnemd_cfg.get("debug_diagnostics", True))
 INCLUDE_MOVIE     = bool(rnemd_cfg.get("include_movie", False))
 INCLUDE_ANIMATION = bool(rnemd_cfg.get("debug_animation", False))
+N_WARMUP_CYCLES   = int(rnemd_cfg.get("n_warmup_cycles", 0))
+
+# GB list from YAML (used in main() to restrict processing to configured GBs only)
+BULK_SI_LABEL = "bulk_si"
+_raw_gbs = config["grain_boundaries"]
+NO_GB_MODE = len(_raw_gbs) == 1 and _raw_gbs[0].get("sigma") == -1
+GB_LIST = [] if NO_GB_MODE else [
+    (tuple(entry["axis"]), int(entry["sigma"]), tuple(entry["plane"]))
+    for entry in _raw_gbs
+]
 
 # Si atomic mass in amu (used for energy flux calculation)
 M_SI_AMU = 28.085
@@ -160,6 +170,12 @@ def run_one_cycle(atoms, run_dir):
     # Calorine writes vel to model.xyz without converting, but GPUMD
     # reads vel as Å/fs.  Without this, velocities are ~10x too large.
     atoms.set_velocities(atoms.get_velocities() * units.fs)
+
+    # Remove stale movie.xyz before each cycle: GPUMD appends rather than
+    # overwrites, so a leftover file from an interrupted run corrupts reads.
+    movie_path = os.path.join(run_dir, "movie.xyz")
+    if os.path.exists(movie_path):
+        os.remove(movie_path)
 
     # NOTE: Must re-create calculator each cycle (calorine limitation)
     calc = GPUNEP(
@@ -296,6 +312,25 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
     """
     os.makedirs(out_dir, exist_ok=True)
 
+    # Find already-completed runs (have final_atoms.traj).
+    # N_RUNS is the target total; only add what is still needed.
+    existing_run_indices = sorted([
+        int(d[4:]) for d in os.listdir(out_dir)
+        if os.path.isdir(os.path.join(out_dir, d))
+        and d.startswith("run_")
+        and os.path.exists(os.path.join(out_dir, d, "final_atoms.traj"))
+    ])
+    n_existing = len(existing_run_indices)
+    runs_to_add = N_RUNS - n_existing
+    next_run_idx = (max(existing_run_indices) + 1) if existing_run_indices else 0
+
+    if runs_to_add <= 0:
+        print(f"  Already have {n_existing} completed run(s) (target={N_RUNS}), skipping.")
+        return [], {}
+    if n_existing > 0:
+        print(f"  Have {n_existing} completed run(s), adding {runs_to_add} more "
+              f"(run_{next_run_idx} onward) to reach target of {N_RUNS}.")
+
     # Cell geometry: aimsgb with direction=0 stacks grains along ASE cell axis 2.
     # Axes 0 and 1 are the (repeated) cross-section directions.
     stacking_len = np.linalg.norm(atoms.cell[2])          # Å, GB-normal direction
@@ -313,7 +348,7 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
 
     all_run_results = []
 
-    for run_idx in range(N_RUNS):
+    for run_idx in range(next_run_idx, next_run_idx + runs_to_add):
         run_dir = os.path.join(out_dir, f"run_{run_idx}")
         os.makedirs(run_dir, exist_ok=True)
 
@@ -327,6 +362,14 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         # Bin atoms along the stacking direction (ASE cell axis 2)
         scaled_z = [a.scaled_position[2] for a in run_atoms]
         binned = bin_atoms(bins, scaled_z)
+
+        # Warmup phase: build up the temperature gradient before recording data.
+        if N_WARMUP_CYCLES > 0:
+            print(f"    Warmup ({N_WARMUP_CYCLES} cycles)...")
+            for _ in tqdm(range(N_WARMUP_CYCLES), desc="      warmup"):
+                run_atoms = run_one_cycle(run_atoms, run_dir)
+                swap_velocities(run_atoms, binned[COLD_BIN], binned[HOT_BIN])
+            print(f"    Warmup done. T = {run_atoms.get_temperature():.1f} K")
 
         # Save bin visualization
         if DEBUG_STRUCTURE:
@@ -463,11 +506,11 @@ def process_gb_type(gb_label_str):
     struct_dir = os.path.join(out_base, f"structure_{best_run_index}")
     print(f"\n--- Structure run_{best_run_index} (E={best_energy:.4f} eV) ---")
 
-    all_run_results, aggregate = run_rnemd_on_structure(
+    all_run_results, _ = run_rnemd_on_structure(
         atoms, best_run_index, gb_label_str, struct_dir
     )
 
-    # --- Per-run summary CSV ---
+    # --- Per-run summary CSV (append to existing rows if present) ---
     os.makedirs(out_base, exist_ok=True)
 
     summary_path = os.path.join(out_base, "summary.csv")
@@ -475,13 +518,26 @@ def process_gb_type(gb_label_str):
         "structure_index", "run_index", "energy_ev",
         "R_K_SI", "kappa_SI", "J_SI", "delta_T", "n_atoms", "converged",
     ]
-    with open(summary_path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=summary_fields, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(all_run_results)
-    print(f"\nPer-run summary written to {summary_path}")
+    existing_rows = []
+    if os.path.exists(summary_path):
+        existing_rows = pd.read_csv(summary_path).to_dict("records")
 
-    # --- Aggregate CSV ---
+    if all_run_results:
+        open_mode = "a" if existing_rows else "w"
+        with open(summary_path, open_mode, newline="") as f:
+            w = csv.DictWriter(f, fieldnames=summary_fields, extrasaction="ignore")
+            if not existing_rows:
+                w.writeheader()
+            w.writerows(all_run_results)
+        print(f"\nPer-run summary written to {summary_path}")
+
+    # --- Aggregate CSV (recomputed from all runs: existing + new) ---
+    existing_for_agg = [
+        {k: float(r[k]) for k in ("kappa_SI", "R_K_SI", "J_SI")}
+        for r in existing_rows
+    ]
+    aggregate = aggregate_run_results(existing_for_agg + all_run_results)
+
     agg_path = os.path.join(out_base, "aggregate.csv")
     agg_fields = [
         "structure_index", "n_runs",
@@ -495,9 +551,10 @@ def process_gb_type(gb_label_str):
         w = csv.DictWriter(f, fieldnames=agg_fields, extrasaction="ignore")
         w.writeheader()
         w.writerow(agg_row)
-    print(f"Aggregate summary written to {agg_path}")
+    print(f"Aggregate summary written to {agg_path} (n={aggregate['n_runs']} total runs)")
 
-    _print_summary_table(all_run_results, gb_label_str)
+    if all_run_results:
+        _print_summary_table(all_run_results, gb_label_str)
 
 
 def _print_summary_table(rows, label):
@@ -523,15 +580,13 @@ def main():
 
     if args.gb:
         process_gb_type(args.gb)
+    elif NO_GB_MODE:
+        process_gb_type(BULK_SI_LABEL)
     else:
-        gb_dirs = sorted(
-            glob.glob(os.path.join(GB_RESULTS_DIR, "*sigma*")) +
-            glob.glob(os.path.join(GB_RESULTS_DIR, "bulk_si"))
-        )
-        if not gb_dirs:
-            raise RuntimeError(f"No GB result folders found in {GB_RESULTS_DIR}.")
-        for gb_dir in gb_dirs:
-            process_gb_type(os.path.basename(gb_dir))
+        if not GB_LIST:
+            raise RuntimeError("No grain boundaries defined in config.")
+        for (axis, sigma, plane) in GB_LIST:
+            process_gb_type(gb_label(axis, sigma, plane))
 
 
 if __name__ == "__main__":

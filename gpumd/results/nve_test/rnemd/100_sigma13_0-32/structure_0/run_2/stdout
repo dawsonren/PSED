@@ -100,8 +100,8 @@ Run 100 steps.
     100 steps completed.
 
 ---------------------------------------------------------------
-Time used for this run = 1.41682 second.
-Speed of this run = 5.7255e+06 atom*step/second.
+Time used for this run = 1.27434 second.
+Speed of this run = 6.36567e+06 atom*step/second.
 ---------------------------------------------------------------
 
 
@@ -111,7 +111,7 @@ Finished executing the commands in run.in.
 
 
 ---------------------------------------------------------------
-Time used = 1.631754 s.
+Time used = 1.450014 s.
 ---------------------------------------------------------------
 
 
