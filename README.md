@@ -9,4 +9,4 @@ To request a GPU for some amount of time in interactive mode:
 To submit a batch job:
 `sbatch <script>`
 
-I have my prinmary script in `gpumd/gpumd.q`.
+I have my primary script in `gpumd/gpumd.q`.
