@@ -39,7 +39,7 @@ rnemd:
   n_cycles: 500                  # number of production cycles (velocity swaps after each)
   steps_per_cycle: 100           # controls the frequency of velocity swaps
   # control replications
-  n_runs: 5                # independent rNEMD simulations per structure (for uncertainty)
+  n_runs: 10                # independent rNEMD simulations per structure (for uncertainty)
   # control simulation parameters
   ensemble: "nve"
   temperature_k: 675

@@ -14,6 +14,7 @@ __pycache__/
 *.in
 *.out
 *.mp4
+*.traj
 
 # Distribution / packaging
 .Python

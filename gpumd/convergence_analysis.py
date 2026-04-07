@@ -2,12 +2,15 @@
 convergence_analysis.py
 
 Plots kappa and TBR (R_K) as a function of cycle for each grain boundary in a
-config, using cumulative averages of the bin temperatures over time.  One plot
-per grain boundary, saved as convergence.png in the GB's rNEMD results directory.
+config.  By default uses cumulative averages of the bin temperatures over time
+(--cumulative, the default); pass --no-cumulative to use the instantaneous
+per-cycle temperature profile and heat flux instead.  Also saves an
+autocorrelation plot for kappa and R_K.
 
 Usage:
     python convergence_analysis.py --config configs/nve_test_xlarge.yaml
     python convergence_analysis.py --config configs/nve_test_xlarge.yaml --gb 100_sigma13_0-32
+    python convergence_analysis.py --config configs/nve_test_xlarge.yaml --no-cumulative
 """
 
 import argparse
@@ -29,10 +32,10 @@ M_SI_AMU = 28.085  # Si atomic mass in amu
 
 
 def compute_convergence(temps_times, velocities_hc, bin_centers, cross_section_A2,
-                        steps_per_cycle, timestep_fs, nbins, cold_bin, hot_bin):
+                        steps_per_cycle, timestep_fs, nbins, cold_bin, hot_bin,
+                        cumulative=True):
     """
-    Compute kappa [W/(m·K)] and R_K [K·m²/W] at every cycle N using the
-    cumulative-average temperature profile and cumulative heat flux up to N.
+    Compute kappa [W/(m·K)] and R_K [K·m²/W] at every cycle N.
 
     Parameters
     ----------
@@ -43,6 +46,10 @@ def compute_convergence(temps_times, velocities_hc, bin_centers, cross_section_A
     steps_per_cycle : int
     timestep_fs : float
     nbins, cold_bin, hot_bin : int
+    cumulative : bool
+        If True (default), use the cumulative-average temperature profile and
+        cumulative heat flux up to cycle N.  If False, use the instantaneous
+        per-cycle temperature profile and the per-cycle heat flux at cycle N.
 
     Returns
     -------
@@ -50,11 +57,12 @@ def compute_convergence(temps_times, velocities_hc, bin_centers, cross_section_A
     """
     n_cycles = len(temps_times)
     A_m2 = cross_section_A2 * 1e-20
+    dt_cycle_s = steps_per_cycle * timestep_fs * 1e-15
 
     v_hot  = velocities_hc[:, 0]
     v_cold = velocities_hc[:, 1]
-    delta_KE_eV = 0.5 * M_SI_AMU * (v_hot**2 - v_cold**2)
-    cumulative_energy_J = np.cumsum(delta_KE_eV) * 1.602176634e-19
+    delta_KE_J = 0.5 * M_SI_AMU * (v_hot**2 - v_cold**2) * 1.602176634e-19
+    cumulative_energy_J = np.cumsum(delta_KE_J)
 
     margin = 1
     gb_bin = nbins // 2
@@ -67,14 +75,16 @@ def compute_convergence(temps_times, velocities_hc, bin_centers, cross_section_A
 
     cumul_sum = np.zeros(nbins)
     for N in range(1, n_cycles + 1):
-        cumul_sum += temps_times[N - 1]
-        cumul_avg  = cumul_sum / N
+        if cumulative:
+            cumul_sum += temps_times[N - 1]
+            T_profile = cumul_sum / N
+            J = cumulative_energy_J[N - 1] / (2.0 * A_m2 * N * dt_cycle_s)
+        else:
+            T_profile = temps_times[N - 1]
+            J = delta_KE_J[N - 1] / (2.0 * A_m2 * dt_cycle_s)
 
-        t_s = N * steps_per_cycle * timestep_fs * 1e-15
-        J   = cumulative_energy_J[N - 1] / (2.0 * A_m2 * t_s)
-
-        T_left  = cumul_avg[cold_bin + margin : gb_bin]
-        T_right = cumul_avg[gb_bin : hot_bin - margin]
+        T_left  = T_profile[cold_bin + margin : gb_bin]
+        T_right = T_profile[gb_bin : hot_bin - margin]
 
         left_fit  = np.polyfit(x_left,  T_left,  1)
         right_fit = np.polyfit(x_right, T_right, 1)
@@ -88,6 +98,49 @@ def compute_convergence(temps_times, velocities_hc, bin_centers, cross_section_A
         R_Ks[N - 1] = delta_T / J if J > 0 else np.nan
 
     return kappas, R_Ks
+
+
+def autocorr(x):
+    """Normalized autocorrelation of a 1-D array (NaN-safe)."""
+    x = np.asarray(x, dtype=float)
+    x = x[np.isfinite(x)]
+    if len(x) < 2:
+        return np.array([1.0])
+    x = x - x.mean()
+    result = np.correlate(x, x, mode='full')
+    result = result[result.size // 2:]
+    return result / result[0]
+
+
+def plot_autocorrelation(all_kappas, all_R_Ks, run_labels, gb_label_str, out_path):
+    """Save a two-panel autocorrelation plot for kappa and R_K."""
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=False)
+    fig.suptitle(f"Autocorrelation — {gb_label_str}", fontsize=12)
+
+    colors = plt.cm.tab10.colors
+    for i, (kappas, R_Ks) in enumerate(zip(all_kappas, all_R_Ks)):
+        c = colors[i % len(colors)]
+        ac_kappa = autocorr(kappas)
+        ac_rk    = autocorr(R_Ks)
+        axes[0].plot(np.arange(len(ac_kappa)), ac_kappa, color=c, linewidth=0.8,
+                     label=run_labels[i])
+        axes[1].plot(np.arange(len(ac_rk)),    ac_rk,    color=c, linewidth=0.8,
+                     label=run_labels[i])
+
+    for ax, title, ylabel in [
+        (axes[0], "Autocorrelation of κ",    "ACF"),
+        (axes[1], "Autocorrelation of R_K",  "ACF"),
+    ]:
+        ax.axhline(0, color='k', linewidth=0.5, linestyle='--')
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend(fontsize=8)
+
+    axes[1].set_xlabel("Lag (cycles)")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    print(f"  Saved: {out_path}")
 
 
 def plot_convergence(all_kappas, all_R_Ks, run_labels, gb_label_str, out_path):
@@ -117,7 +170,50 @@ def plot_convergence(all_kappas, all_R_Ks, run_labels, gb_label_str, out_path):
     print(f"  Saved: {out_path}")
 
 
-def process_gb(gb_label_str, config_name, gpumd_root, rnemd_cfg):
+def plot_convergence_instantaneous(all_kappas, all_R_Ks, run_labels, gb_label_str,
+                                   out_dir):
+    """
+    For instantaneous mode: save two separate figures, each with one subplot per
+    replication so that very different y-scales don't obscure individual traces.
+    """
+    n = len(all_kappas)
+    ncols = min(n, 3)
+    nrows = (n + ncols - 1) // ncols
+
+    for data_list, ylabel, title, filename in [
+        (all_kappas, "κ [W/(m·K)]", "Bulk thermal conductivity (instantaneous)",
+         "convergence_instantaneous_kappa.png"),
+        (all_R_Ks,   "R_K [K·m²/W]", "Kapitza resistance / TBR (instantaneous)",
+         "convergence_instantaneous_tbr.png"),
+    ]:
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(5 * ncols, 4 * nrows),
+                                 squeeze=False)
+        fig.suptitle(f"{title} — {gb_label_str}", fontsize=12)
+
+        colors = plt.cm.tab10.colors
+        for i, (data, label) in enumerate(zip(data_list, run_labels)):
+            row, col = divmod(i, ncols)
+            ax = axes[row][col]
+            cycles = np.arange(1, len(data) + 1)
+            ax.plot(cycles, data, color=colors[i % len(colors)], linewidth=0.8)
+            ax.set_title(label, fontsize=8)
+            ax.set_xlabel("Cycle")
+            ax.set_ylabel(ylabel)
+
+        # Hide any unused subplots
+        for j in range(n, nrows * ncols):
+            row, col = divmod(j, ncols)
+            axes[row][col].set_visible(False)
+
+        plt.tight_layout()
+        out_path = out_dir / filename
+        plt.savefig(out_path, dpi=150)
+        plt.close()
+        print(f"  Saved: {out_path}")
+
+
+def process_gb(gb_label_str, config_name, gpumd_root, rnemd_cfg, cumulative=True):
     rnemd_dir = gpumd_root / "results" / config_name / "rnemd" / gb_label_str
     if not rnemd_dir.exists():
         print(f"  No rNEMD results found for {gb_label_str}, skipping.")
@@ -151,6 +247,7 @@ def process_gb(gb_label_str, config_name, gpumd_root, rnemd_cfg):
             kappas, R_Ks = compute_convergence(
                 temps_times, velocities_hc, bin_centers, cross_section,
                 steps_per_cycle, timestep_fs, nbins, cold_bin, hot_bin,
+                cumulative=cumulative,
             )
             all_kappas.append(kappas)
             all_R_Ks.append(R_Ks)
@@ -164,8 +261,14 @@ def process_gb(gb_label_str, config_name, gpumd_root, rnemd_cfg):
         print(f"  No complete run data found for {gb_label_str}.")
         return
 
-    plot_convergence(all_kappas, all_R_Ks, run_labels, gb_label_str,
-                     rnemd_dir / "convergence.png")
+    if cumulative:
+        plot_convergence(all_kappas, all_R_Ks, run_labels, gb_label_str,
+                         rnemd_dir / "convergence.png")
+    else:
+        plot_convergence_instantaneous(all_kappas, all_R_Ks, run_labels, gb_label_str,
+                                       rnemd_dir)
+    plot_autocorrelation(all_kappas, all_R_Ks, run_labels, gb_label_str,
+                         rnemd_dir / "autocorrelation.png")
 
 
 def main():
@@ -174,6 +277,11 @@ def main():
     )
     parser.add_argument("--config", required=True, help="Path to YAML config")
     parser.add_argument("--gb", default=None, help="Process a specific GB label")
+    parser.add_argument(
+        "--cumulative", action=argparse.BooleanOptionalAction, default=True,
+        help="Use cumulative-average temperatures/flux (default: True). "
+             "Pass --no-cumulative to use per-cycle instantaneous values.",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -198,7 +306,8 @@ def main():
 
     for label in gb_labels:
         print(f"\nProcessing {label}...")
-        process_gb(label, config_name, gpumd_root, config["rnemd"])
+        process_gb(label, config_name, gpumd_root, config["rnemd"],
+                   cumulative=args.cumulative)
 
 
 if __name__ == "__main__":

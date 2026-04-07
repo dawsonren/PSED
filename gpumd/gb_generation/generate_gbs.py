@@ -493,14 +493,25 @@ def main():
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    # Fetch Si structure from Materials Project (requires API key in .env)
-    print(f"Fetching Si structure from Materials Project (mp-149)...")
-    s_input = Grain.from_mp_id("mp-149")
-
     if NO_GB_MODE:
+        bulk_summary = os.path.join(RESULTS_DIR, BULK_SI_LABEL, "summary.csv")
+        if os.path.exists(bulk_summary):
+            with open(bulk_summary) as f:
+                n_done = sum(1 for _ in csv.reader(f)) - 1
+            if n_done >= N_RUNS:
+                print(f"Skipping: bulk_si already has {N_RUNS}/{N_RUNS} runs completed.")
+                return
+        print(f"Fetching Si structure from Materials Project (mp-149)...")
+        s_input = Grain.from_mp_id("mp-149")
         process_gb(None, -1, None, s_input)
     else:
         gb_status = check_gb_generation_status(args.config)
+        all_done = all(info["runs_remaining"] == 0 for info in gb_status.values())
+        if all_done:
+            print(f"All {len(GB_LIST)} GBs already completed ({N_RUNS}/{N_RUNS} runs each). Nothing to do.")
+            return
+        print(f"Fetching Si structure from Materials Project (mp-149)...")
+        s_input = Grain.from_mp_id("mp-149")
         for (axis, sigma, plane) in GB_LIST:
             label = gb_label(axis, sigma, plane)
             info = gb_status.get(label, {"status": "not_started", "runs_remaining": N_RUNS})
