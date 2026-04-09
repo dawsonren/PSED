@@ -37,6 +37,7 @@ Kapitza resistance: R_K = ΔT_GB / J
 import os
 import csv
 import argparse
+import subprocess
 import warnings
 from pathlib import Path
 
@@ -54,11 +55,14 @@ from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.visualize.plot import plot_atoms
 from ase.geometry.cell import cell_to_cellpar, cellpar_to_cell
 
-# NOTE: suppress warnings from re-initializing calorine (weird quirk that Dawson Smith noticed)
-# see note in run_one_cycle()
-warnings.filterwarnings("ignore", message=".*is not empty.*", module="calorine")
-
-from calorine.calculators import GPUNEP
+try:
+    # NOTE: suppress warnings from re-initializing calorine (weird quirk that Dawson Smith noticed)
+    # see note in run_one_cycle()
+    warnings.filterwarnings("ignore", message=".*is not empty.*", module="calorine")
+    from calorine.calculators import GPUNEP
+    _CALORINE_AVAILABLE = True
+except ImportError:
+    _CALORINE_AVAILABLE = False
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -100,6 +104,7 @@ CONFIG_NAME = Path(args.config).stem  # e.g. "small_box"
 
 NEP_MODEL_FILE = str(GPUMD_ROOT / config["nep_model"])
 GPUMD_EXEC     = os.path.expandvars(config["gpumd_exec"])
+USE_SW_POTENTIAL = Path(NEP_MODEL_FILE).suffix == '.sw'
 
 GB_RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
 RNEMD_RESULTS_DIR = str(GPUMD_ROOT / "results" / CONFIG_NAME / "rnemd")
@@ -142,16 +147,99 @@ M_SI_AMU = 28.085
 # Single rNEMD cycle
 # ---------------------------------------------------------------------------
 
+def _write_run_in(run_dir):
+    """Write run.in for direct GPUMD execution (SW potential path)."""
+    rel_potential = os.path.relpath(NEP_MODEL_FILE, run_dir)
+    lines = [
+        f"potential {rel_potential}",
+        f"time_step {TIMESTEP_FS}",
+    ]
+    if ENSEMBLE == "nve":
+        lines.append("ensemble nve")
+    elif ENSEMBLE == "npt_scr":
+        lines.append(
+            f"ensemble npt_scr {TEMPERATURE_K} {TEMPERATURE_K} "
+            f"{TAU_T} {PRESSURE_GPA} {BULK_MODULUS_GPA} {TAU_P}"
+        )
+    lines += [
+        f"dump_velocity {STEPS_PER_CYCLE}",
+        f"dump_exyz {STEPS_PER_CYCLE} 0 0",  # positions only (no vel/force in dump.xyz)
+        f"run {STEPS_PER_CYCLE}",
+    ]
+    with open(os.path.join(run_dir, "run.in"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def run_one_cycle_gpumd(atoms, run_dir):
+    """
+    Run STEPS_PER_CYCLE MD steps by invoking the GPUMD executable directly.
+    Used when the potential is an empirical potential (e.g. Stillinger-Weber .sw),
+    which calorine/GPUNEP does not support.
+
+    Velocity unit convention (same as the calorine path):
+      ASE internal:  Å/t_ASE  (t_ASE = sqrt(amu·Å²/eV) ≈ 10.18 fs)
+      GPUMD expects: Å/fs
+      Conversion:    v_gpumd = v_ase * units.fs
+    """
+    # Write model.xyz with velocities in GPUMD units (Å/fs)
+    tmp = atoms.copy()
+    tmp.set_velocities(atoms.get_velocities() * units.fs)
+    write(os.path.join(run_dir, "model.xyz"), tmp, format="extxyz")
+    _write_run_in(run_dir)
+
+    # Remove stale per-cycle output (GPUMD appends rather than overwrites)
+    for fname in ("velocity.out", "dump.xyz"):
+        fpath = os.path.join(run_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
+    # Run GPUMD
+    result = subprocess.run(
+        [GPUMD_EXEC], cwd=run_dir,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"GPUMD failed (rc={result.returncode}):\n"
+            + result.stderr.decode()
+        )
+
+    # Read final positions from dump.xyz (single frame, positions in Å)
+    updated = read(os.path.join(run_dir, "dump.xyz"), index=-1, format="extxyz")
+
+    # Read final velocities from velocity.out (last N lines, units: Å/fs)
+    vel_path = os.path.join(run_dir, "velocity.out")
+    vels = pd.read_csv(vel_path, sep=r"\s+", header=None).iloc[-len(atoms):, :3]
+    updated.set_velocities(vels.values / units.fs)  # Å/fs → ASE units
+
+    # Clean up per-cycle files to prevent ever-growing outputs
+    files_to_remove = ["velocity.out", "dump.xyz"]
+    if not INCLUDE_MOVIE:
+        files_to_remove.append("movie.xyz")
+    for fname in files_to_remove:
+        fpath = os.path.join(run_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
+    return updated
+
+
 def run_one_cycle(atoms, run_dir):
     """
     Run STEPS_PER_CYCLE MD steps via GPUMD, read back velocities, and return
     the updated atoms with correct velocities attached.
+
+    For SW empirical potentials, dispatches to run_one_cycle_gpumd() which
+    calls the GPUMD executable directly.  For NEP potentials, uses calorine.
 
     Calorine quirk: velocities are not returned by run_custom_md — they must
     be read from velocity.out.  The division by ~0.098 converts from GPUMD's
     internal velocity units (Å/fs) to ASE's internal units (Å/t_ASE where
     t_ASE ≈ 10.18 fs ≈ sqrt(amu·Å²/eV)).  The exact factor is ase.units.fs.
     """
+    if USE_SW_POTENTIAL:
+        return run_one_cycle_gpumd(atoms, run_dir)
+
     if ENSEMBLE == "npt_scr":
         ensemble_params = ['npt_scr', TEMPERATURE_K, TEMPERATURE_K, TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]
     elif ENSEMBLE == "nve":
@@ -574,7 +662,7 @@ def _print_summary_table(rows, label):
 
 def main():
     if not os.path.exists(NEP_MODEL_FILE):
-        raise FileNotFoundError(f"NEP model not found at '{NEP_MODEL_FILE}'.")
+        raise FileNotFoundError(f"Potential not found at '{NEP_MODEL_FILE}'.")
 
     os.makedirs(RNEMD_RESULTS_DIR, exist_ok=True)
 

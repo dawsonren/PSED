@@ -8,3 +8,8 @@ To request a GPU for some amount of time in interactive mode:
     
 To submit a batch job to run the full GB generation/RNEMD campaign:
 `sbatch --time=8:00:00 --job-name gpumd-nve-test-xlarge gpumd/gpumd.q nve_test_xlarge`
+
+## Running with Stillinger-Weber Potential
+The SW potential is no longer supported in the current version of GPUMD. You can follow the steps 
+in `gpumd/quest_setup.txt` to setup on Quest.
+

@@ -5,11 +5,18 @@ srun --partition=gengpu --gres=gpu:1 --time=01:00:00 --pty --account <allocation
 module load gcc/12.4.0-gcc-8.5.0
 module load cuda/12.6.2-gcc-12.4.0
 module load git
-# git clone the repogit clone https://github.com/brucefan1983/GPUMD
+# git clone the repo
+git clone https://github.com/brucefan1983/GPUMD
+
+# if want Stillinger-Weber, go to old version
+git checkout v3.3.1
 
 # run Makefile in GPUMD
 cd GPUMD 
 make
+
+# you may need to modify Makefile if using old version to compile with C++14 instead of 
+# c++14 and also the sm_XX flag
 
 # QUIT out of the interactive Quest partition
 # THEN copy the executables into your home directory, I put it in ~/exec
