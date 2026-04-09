@@ -1,0 +1,56 @@
+# Create 100nm length GBs for testing
+
+# paths (relative to gpumd/ root)
+nep_model: potentials/Si_GAP_nep.txt
+gpumd_exec: /home/djr2473/exec/gpumd
+
+# GB generation parameters
+gb_generation:
+  # control simulation box size (MD has heat flow over z-axis)
+  x_nm: 5.0
+  y_nm: 5.0
+  z_nm: 50.0
+  # control simulation length
+  total_time_ps: 100.0
+  timestep_fs: 1.0
+  # control replications
+  n_runs: 1
+  # control npt simulation parameters
+  t_start: 10.0           # K — annealing start temperature
+  t_end: 675.0            # K — annealing end temperature
+  tau_t: 200.0            # thermostat coupling (in timesteps)
+  pressure_gpa: 0         # target pressure [GPa]
+  bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
+  tau_p: 1000             # barostat coupling (in timesteps)
+  # control lbfgs step
+  f_max: 10
+  steps: 0
+  # control debugging plots (can be slow) and intermediate structure dumps
+  debug: False
+  dump_interval: 50000
+
+# RNEMD parameters
+rnemd:
+  # control rnemd setup
+  nbins: 1000                # must be even (symmetric PBC paths)
+  # control simulation length, total steps = n_cycles * steps_per_cycle
+  timestep_fs: 2
+  n_warmup_cycles: 1000          # warmup cycles to build gradient before recording data
+  n_cycles: 500                  # number of production cycles (velocity swaps after each)
+  steps_per_cycle: 50           # controls the frequency of velocity swaps
+  # control replications
+  n_runs: 10                # independent rNEMD simulations per structure (for uncertainty)
+  # control simulation parameters
+  ensemble: "nve"
+  temperature_k: 675
+  # control debugging plots (can be slow)
+  debug_structure: False
+  debug_diagnostics: True
+  include_movie: False
+  debug_animation: True   # save temperature_profile.mp4 (one line per frame)
+
+# GB specifications
+grain_boundaries:
+- axis: [1, 0, 0]
+  sigma: 13
+  plane: [0, -3, 2]
