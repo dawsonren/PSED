@@ -53,22 +53,14 @@ from ase import units
 from ase.io import read, write
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.visualize.plot import plot_atoms
-from ase.geometry.cell import cell_to_cellpar, cellpar_to_cell
-
-try:
-    # NOTE: suppress warnings from re-initializing calorine (weird quirk that Dawson Smith noticed)
-    # see note in run_one_cycle()
-    warnings.filterwarnings("ignore", message=".*is not empty.*", module="calorine")
-    from calorine.calculators import GPUNEP
-    _CALORINE_AVAILABLE = True
-except ImportError:
-    _CALORINE_AVAILABLE = False
+warnings.filterwarnings("ignore", message=".*is not empty.*", module="calorine")
+from calorine.calculators import GPUNEP
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.muller_plathe import swap_velocities, bin_atoms
 from utils.rnemd_stats import check_steady_state, aggregate_run_results, format_result_summary
-from utils.rnemd_plots import plot_temperature_profile, plot_temperature_profile_animated
+from utils.rnemd_plots import plot_temperature_profile, plot_energy_diagnostics, plot_temperature_profile_animated
 from utils.work_coordination import gb_label
 
 # ---------------------------------------------------------------------------
@@ -104,7 +96,7 @@ CONFIG_NAME = Path(args.config).stem  # e.g. "small_box"
 
 NEP_MODEL_FILE = str(GPUMD_ROOT / config["nep_model"])
 GPUMD_EXEC     = os.path.expandvars(config["gpumd_exec"])
-USE_SW_POTENTIAL = Path(NEP_MODEL_FILE).suffix == '.sw'
+USE_CALORINE   = bool(config.get("use_calorine", False))
 
 GB_RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
 RNEMD_RESULTS_DIR = str(GPUMD_ROOT / "results" / CONFIG_NAME / "rnemd")
@@ -148,7 +140,7 @@ M_SI_AMU = 28.085
 # ---------------------------------------------------------------------------
 
 def _write_run_in(run_dir):
-    """Write run.in for direct GPUMD execution (SW potential path)."""
+    """Write run.in for direct GPUMD execution (non-calorine path)."""
     rel_potential = os.path.relpath(NEP_MODEL_FILE, run_dir)
     lines = [
         f"potential {rel_potential}",
@@ -163,7 +155,8 @@ def _write_run_in(run_dir):
         )
     lines += [
         f"dump_velocity {STEPS_PER_CYCLE}",
-        f"dump_exyz {STEPS_PER_CYCLE} 0 0",  # positions only (no vel/force in dump.xyz)
+        f"dump_position {STEPS_PER_CYCLE}",
+        f"dump_thermo {STEPS_PER_CYCLE}",
         f"run {STEPS_PER_CYCLE}",
     ]
     with open(os.path.join(run_dir, "run.in"), "w") as f:
@@ -173,8 +166,7 @@ def _write_run_in(run_dir):
 def run_one_cycle_gpumd(atoms, run_dir):
     """
     Run STEPS_PER_CYCLE MD steps by invoking the GPUMD executable directly.
-    Used when the potential is an empirical potential (e.g. Stillinger-Weber .sw),
-    which calorine/GPUNEP does not support.
+    Used when use_calorine is False in the YAML config.
 
     Velocity unit convention (same as the calorine path):
       ASE internal:  Å/t_ASE  (t_ASE = sqrt(amu·Å²/eV) ≈ 10.18 fs)
@@ -188,32 +180,42 @@ def run_one_cycle_gpumd(atoms, run_dir):
     _write_run_in(run_dir)
 
     # Remove stale per-cycle output (GPUMD appends rather than overwrites)
-    for fname in ("velocity.out", "dump.xyz"):
+    for fname in ("velocity.out", "movie.xyz", "thermo.out"):
         fpath = os.path.join(run_dir, fname)
         if os.path.exists(fpath):
             os.remove(fpath)
 
     # Run GPUMD
-    result = subprocess.run(
-        [GPUMD_EXEC], cwd=run_dir,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    with open(os.path.join(run_dir, "stdout"), "w") as stdout_f:
+        result = subprocess.run(
+            [GPUMD_EXEC], cwd=run_dir,
+            stdout=stdout_f, stderr=subprocess.PIPE,
+        )
     if result.returncode != 0:
         raise RuntimeError(
             f"GPUMD failed (rc={result.returncode}):\n"
             + result.stderr.decode()
         )
 
-    # Read final positions from dump.xyz (single frame, positions in Å)
-    updated = read(os.path.join(run_dir, "dump.xyz"), index=-1, format="extxyz")
+    # Read final positions from movie.xyz (last frame, positions in Å)
+    updated = read(os.path.join(run_dir, "movie.xyz"), index=-1, format="extxyz")
 
     # Read final velocities from velocity.out (last N lines, units: Å/fs)
     vel_path = os.path.join(run_dir, "velocity.out")
     vels = pd.read_csv(vel_path, sep=r"\s+", header=None).iloc[-len(atoms):, :3]
     updated.set_velocities(vels.values / units.fs)  # Å/fs → ASE units
 
+    # Read kinetic and potential energy from thermo.out (columns 1=K, 2=U in eV)
+    thermo_data = np.loadtxt(os.path.join(run_dir, "thermo.out"))
+    if thermo_data.ndim == 1:
+        ke = float(thermo_data[1])
+        pe = float(thermo_data[2])
+    else:
+        ke = float(thermo_data[-1, 1])
+        pe = float(thermo_data[-1, 2])
+
     # Clean up per-cycle files to prevent ever-growing outputs
-    files_to_remove = ["velocity.out", "dump.xyz"]
+    files_to_remove = ["velocity.out", "thermo.out"]
     if not INCLUDE_MOVIE:
         files_to_remove.append("movie.xyz")
     for fname in files_to_remove:
@@ -221,23 +223,29 @@ def run_one_cycle_gpumd(atoms, run_dir):
         if os.path.exists(fpath):
             os.remove(fpath)
 
-    return updated
+    return updated, ke, pe
 
 
 def run_one_cycle(atoms, run_dir):
     """
     Run STEPS_PER_CYCLE MD steps via GPUMD, read back velocities, and return
-    the updated atoms with correct velocities attached.
+    the updated atoms with correct velocities attached alongside the potential
+    energy for that cycle.
 
-    For SW empirical potentials, dispatches to run_one_cycle_gpumd() which
-    calls the GPUMD executable directly.  For NEP potentials, uses calorine.
+    Returns
+    -------
+    (atoms, ke, pe) where ke and pe are the kinetic and potential energy in eV
+    read from GPUMD's thermo.out (columns K and U respectively).
+
+    When use_calorine is False, dispatches to run_one_cycle_gpumd() which
+    calls the GPUMD executable directly.  Otherwise, uses calorine.
 
     Calorine quirk: velocities are not returned by run_custom_md — they must
     be read from velocity.out.  The division by ~0.098 converts from GPUMD's
     internal velocity units (Å/fs) to ASE's internal units (Å/t_ASE where
     t_ASE ≈ 10.18 fs ≈ sqrt(amu·Å²/eV)).  The exact factor is ase.units.fs.
     """
-    if USE_SW_POTENTIAL:
+    if not USE_CALORINE:
         return run_one_cycle_gpumd(atoms, run_dir)
 
     if ENSEMBLE == "npt_scr":
@@ -248,7 +256,7 @@ def run_one_cycle(atoms, run_dir):
     md_params = [
         ("dump_position", STEPS_PER_CYCLE),
         ("dump_velocity", STEPS_PER_CYCLE),
-        ('dump_exyz', [STEPS_PER_CYCLE, 1]),
+        ("dump_thermo", STEPS_PER_CYCLE),
         ("time_step", TIMESTEP_FS),
         ("ensemble", ensemble_params),
         ("run", STEPS_PER_CYCLE),
@@ -281,9 +289,18 @@ def run_one_cycle(atoms, run_dir):
     vels = pd.read_csv(vel_path, sep=" ", header=None).iloc[-len(atoms):, :]
     atoms.set_velocities(vels.values / units.fs)  # GPUMD (Å/fs) -> ASE units
 
+    # Read kinetic and potential energy from thermo.out (columns 1=K, 2=U in eV)
+    thermo_data = np.loadtxt(os.path.join(run_dir, "thermo.out"))
+    if thermo_data.ndim == 1:
+        ke = float(thermo_data[1])
+        pe = float(thermo_data[2])
+    else:
+        ke = float(thermo_data[-1, 1])
+        pe = float(thermo_data[-1, 2])
+
     # At the end of run_one_cycle, after reading velocities
     # this prevents us from having output files that get longer and longer!
-    files_to_remove = ["velocity.out", "position.out", "dump.xyz"]
+    files_to_remove = ["velocity.out", "position.out", "thermo.out"]
     if not INCLUDE_MOVIE:
         files_to_remove.append("movie.xyz")
     for fname in files_to_remove:
@@ -291,7 +308,7 @@ def run_one_cycle(atoms, run_dir):
         if os.path.exists(fpath):
             os.remove(fpath)
 
-    return atoms
+    return atoms, ke, pe
 
 
 # ---------------------------------------------------------------------------
@@ -339,25 +356,49 @@ def compute_tbr_and_kappa(temps_avg, velocities_hc, bin_centers_angstrom,
     # --- Linear fits for dT/dx and ΔT at GB ---
     # GB is at the midpoint (bin NBINS//2).  Fit left bulk (cold_bin -> GB)
     # and right bulk (GB -> hot_bin), excluding 1 bin margin near swap bins.
+    # Due to periodic boundary conditions, there are duplicate bulk segments
+    # wrapping around each end of the box (start→cold and hot→end).  These
+    # are averaged with the primary fits to reduce noise.
     margin = 1
     # NOTE: this is only valid when UC_A == UC_B, if we want twin boundaries then this doesn't work!
     gb_bin = NBINS // 2
-    left_slice = slice(COLD_BIN + margin, gb_bin)
-    right_slice = slice(gb_bin, HOT_BIN - margin)
 
-    x_left = bin_centers_angstrom[left_slice]
-    T_left = temps_avg[left_slice]
-    x_right = bin_centers_angstrom[right_slice]
-    T_right = temps_avg[right_slice]
+    # Primary segments (inner bulk regions)
+    left_slice  = slice(COLD_BIN + margin, gb_bin - margin)   # cold → GB  (slope > 0)
+    right_slice = slice(gb_bin + margin, HOT_BIN - margin)    # GB   → hot (slope > 0)
+    # Periodic duplicate segments (wrap-around bulk regions)
+    cold_dup_slice = slice(margin, COLD_BIN - margin)          # start → cold (slope < 0)
+    hot_dup_slice  = slice(HOT_BIN + margin, NBINS - margin)   # hot → end   (slope < 0)
 
-    left_fit = np.polyfit(x_left, T_left, 1)    # [slope, intercept]
-    right_fit = np.polyfit(x_right, T_right, 1)
+    x_left      = bin_centers_angstrom[left_slice]
+    T_left      = temps_avg[left_slice]
+    x_right     = bin_centers_angstrom[right_slice]
+    T_right     = temps_avg[right_slice]
+    x_cold_dup  = bin_centers_angstrom[cold_dup_slice]
+    T_cold_dup  = temps_avg[cold_dup_slice]
+    x_hot_dup   = bin_centers_angstrom[hot_dup_slice]
+    T_hot_dup   = temps_avg[hot_dup_slice]
 
-    # Average slope for kappa (both sides should agree for a symmetric system)
-    avg_slope = (left_fit[0] + right_fit[0]) / 2.0  # K/Å
-    dTdx_SI = avg_slope * 1e10  # K/Å -> K/m
+    left_fit     = np.polyfit(x_left,     T_left,     1)  # slope > 0 (cold→GB)
+    right_fit    = np.polyfit(x_right,    T_right,    1)  # slope > 0 (GB→hot)
+    cold_dup_fit = np.polyfit(x_cold_dup, T_cold_dup, 1)  # slope < 0 (start→cold wrap)
+    hot_dup_fit  = np.polyfit(x_hot_dup,  T_hot_dup,  1)  # slope < 0 (hot→end wrap)
 
-    kappa = abs(J / dTdx_SI) if abs(dTdx_SI) > 0 else np.nan  # W/(m·K)
+    # Per-grain average gradient magnitude:
+    #   cold grain: average of left_fit[0] (> 0) and −cold_dup_fit[0] (> 0)
+    #   hot  grain: average of right_fit[0] (> 0) and −hot_dup_fit[0] (> 0)
+    cold_slope = (left_fit[0] + (-cold_dup_fit[0])) / 2.0  # K/Å
+    hot_slope  = (right_fit[0] + (-hot_dup_fit[0])) / 2.0  # K/Å
+
+    # Grand average slope and per-grain kappas
+    avg_slope    = (cold_slope + hot_slope) / 2.0   # K/Å
+    dTdx_SI      = avg_slope    * 1e10              # K/m
+    cold_dTdx_SI = cold_slope   * 1e10
+    hot_dTdx_SI  = hot_slope    * 1e10
+
+    kappa      = abs(J / dTdx_SI)      if abs(dTdx_SI)      > 0 else np.nan  # W/(m·K)
+    kappa_cold = abs(J / cold_dTdx_SI) if abs(cold_dTdx_SI) > 0 else np.nan
+    kappa_hot  = abs(J / hot_dTdx_SI)  if abs(hot_dTdx_SI)  > 0 else np.nan
 
     # TBR: extrapolate left and right fits to the GB position
     x_gb = bin_centers_angstrom[gb_bin]
@@ -367,14 +408,30 @@ def compute_tbr_and_kappa(temps_avg, velocities_hc, bin_centers_angstrom,
 
     R_K = delta_T / J if J > 0 else np.nan  # K·m²/W
 
+    # Duplicate TBR: extrapolate cold_dup and hot_dup fits to the periodic boundary
+    # (x=0 and x=box_length are the same physical point — the duplicate GB).
+    bin_width = bin_centers_angstrom[1] - bin_centers_angstrom[0]
+    box_length_angstrom = bin_centers_angstrom[-1] + bin_width / 2.0
+    T_cold_dup_at_dup_gb = np.polyval(cold_dup_fit, 0.0)
+    T_hot_dup_at_dup_gb  = np.polyval(hot_dup_fit, box_length_angstrom)
+    delta_T_dup = abs(T_cold_dup_at_dup_gb - T_hot_dup_at_dup_gb)
+    R_K_dup = delta_T_dup / J if J > 0 else np.nan  # K·m²/W
+
+    # Average primary and duplicate TBR estimates for a less noisy final value
+    R_K_avg = np.nanmean([R_K, R_K_dup])
+
     return {
-        "R_K_SI": R_K,
-        "kappa_SI": kappa,
+        "R_K_SI": R_K_avg,
+        "kappa_SI": kappa,          # grand average — name kept for CSV/analysis compatibility
+        "kappa_cold_SI": kappa_cold,
+        "kappa_hot_SI": kappa_hot,
         "J_SI": J,
         "delta_T": delta_T,
         "dTdx_K_per_m": dTdx_SI,
         "left_fit": left_fit,
         "right_fit": right_fit,
+        "cold_dup_fit": cold_dup_fit,
+        "hot_dup_fit": hot_dup_fit,
     }
 
 
@@ -455,7 +512,7 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         if N_WARMUP_CYCLES > 0:
             print(f"    Warmup ({N_WARMUP_CYCLES} cycles)...")
             for _ in tqdm(range(N_WARMUP_CYCLES), desc="      warmup"):
-                run_atoms = run_one_cycle(run_atoms, run_dir)
+                run_atoms, _, _ = run_one_cycle(run_atoms, run_dir)
                 swap_velocities(run_atoms, binned[COLD_BIN], binned[HOT_BIN])
             print(f"    Warmup done. T = {run_atoms.get_temperature():.1f} K")
 
@@ -480,6 +537,8 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         print(f"    Production ({N_CYCLES} cycles)...")
         temps_times = np.zeros((N_CYCLES, NBINS))
         velocities_hc = np.zeros((N_CYCLES, 2))
+        ke_per_cycle = np.full(N_CYCLES, np.nan)
+        pe_per_cycle = np.full(N_CYCLES, np.nan)
 
         # Open CSV for incremental bin temperature logging
         bin_temps_csv_path = os.path.join(run_dir, "bin_temps.csv")
@@ -487,7 +546,7 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
             csv.writer(f_csv).writerow(["cycle"] + [f"bin_{i}" for i in range(NBINS)])
 
         for cycle in (pbar := tqdm(range(N_CYCLES))):
-            run_atoms = run_one_cycle(run_atoms, run_dir)
+            run_atoms, ke_per_cycle[cycle], pe_per_cycle[cycle] = run_one_cycle(run_atoms, run_dir)
 
             # Müller-Plathe velocity swap
             v_hot, v_cold = swap_velocities(
@@ -509,6 +568,8 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         np.save(os.path.join(run_dir, "temps_times.npy"), temps_times)
         np.save(os.path.join(run_dir, "velocities_hc.npy"), velocities_hc)
         np.save(os.path.join(run_dir, "bin_centers.npy"), bin_centers)
+        np.save(os.path.join(run_dir, "ke_per_cycle.npy"), ke_per_cycle)
+        np.save(os.path.join(run_dir, "pe_per_cycle.npy"), pe_per_cycle)
         write(os.path.join(run_dir, "final_atoms.traj"), run_atoms)
 
         # Steady-state check
@@ -536,16 +597,21 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         })
         all_run_results.append(result)
 
-        print(f"    κ = {result['kappa_SI']:.2f} W/(m·K), "
+        print(f"    κ = {result['kappa_SI']:.2f} W/(m·K) "
+              f"[cold: {result['kappa_cold_SI']:.2f}, hot: {result['kappa_hot_SI']:.2f}], "
               f"R_K = {result['R_K_SI']:.3e} K·m²/W, "
               f"J = {result['J_SI']:.3e} W/m²")
 
-        # Diagnostic plot
+        # Diagnostic plots
         if DEBUG_DIAGNOSTICS:
             plot_temperature_profile(
                 temps_times, bin_centers, result, run_dir,
-                gb_label_str, run_idx, converged, max_dev,
+                gb_label_str, run_idx,
                 cold_bin=COLD_BIN, hot_bin=HOT_BIN, nbins=NBINS,
+            )
+            plot_energy_diagnostics(
+                temps_times, ke_per_cycle, pe_per_cycle, result["n_atoms"], run_dir,
+                gb_label_str, run_idx, converged, max_dev,
             )
         if INCLUDE_ANIMATION:
             plot_temperature_profile_animated(
@@ -604,7 +670,8 @@ def process_gb_type(gb_label_str):
     summary_path = os.path.join(out_base, "summary.csv")
     summary_fields = [
         "structure_index", "run_index", "energy_ev",
-        "R_K_SI", "kappa_SI", "J_SI", "delta_T", "n_atoms", "converged",
+        "R_K_SI", "kappa_SI", "kappa_cold_SI", "kappa_hot_SI",
+        "J_SI", "delta_T", "n_atoms", "converged",
     ]
     existing_rows = []
     if os.path.exists(summary_path):

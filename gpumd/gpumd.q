@@ -13,7 +13,7 @@
 #------------------------------------------------------------------------------
 
 # to change --time and config programmatically, run 
-# sbatch --time=5:00:00 --job-name gpumd-nve-test gpumd.q nve-test
+# sbatch --time=5:00:00 --job-name gpumd-nve-test gpumd.q nve_test
 
 module purge all
 module load gcc/12.4.0-gcc-8.5.0

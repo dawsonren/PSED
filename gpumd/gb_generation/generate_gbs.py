@@ -9,20 +9,26 @@ Usage:
 Pipeline:
 1. Load GB specifications and run parameters from a unified YAML config.
 2. Build GB structure with aimsgb (GrainBoundary + Grain.stack_grains).
-   The x/y/z lengths repeated to achieve the correct BOX_SIZE
-3. Relax the structure using LBFGS.
-4. Anneal with GPUMD: cooling ramp from t_start to t_end over
-   total_time_ps, using npt_scr thermostat.
-5. Repeat step 4 n_runs times with different random initial velocities.
-   All relaxed structures are saved as .traj files.
+   The x/y/z lengths repeated to achieve the correct BOX_SIZE.
+3. Anneal with GPUMD: cooling ramp from npt.t_start to npt.t_end over
+   npt.total_time_ps, using npt_scr thermostat.
+4. Equilibrate with GPUMD: NVT run from nvt.t_start to nvt.t_end over
+   nvt.total_time_ps, using nvt_nhc thermostat.
+5. Repeat steps 3-4 n_runs times with different random initial velocities.
+   All final structures are saved as .traj files.
 6. A summary.csv records energies per run.
 
 File outputs:
     results/<config_name>/gb_generation/
       sigma{n}_{miller}_{axis}/
-        run_0/          <- GPUMD working directory
-          movie.xyz
-          thermo.out
+        run_0/
+          npt/                  <- NPT GPUMD working directory
+            movie.xyz
+            thermo.out
+          nvt/                  <- NVT GPUMD working directory
+            movie.xyz
+            thermo.out
+          structure.traj        <- final structure after NVT
         run_1/
           ...
         summary.csv     <- run_index, energy_ev per row
@@ -31,6 +37,7 @@ File outputs:
 import os
 import csv
 import argparse
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -45,9 +52,7 @@ load_dotenv()
 from aimsgb import GrainBoundary, Grain
 from ase.io import read, write
 from ase.visualize.plot import plot_atoms
-from ase.optimize import LBFGS
-
-from calorine.calculators import GPUNEP, CPUNEP
+from calorine.calculators import GPUNEP
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -81,28 +86,43 @@ CONFIG_NAME = Path(args.config).stem  # e.g. "small_box"
 
 NEP_MODEL_FILE = str(GPUMD_ROOT / config["nep_model"])
 GPUMD_EXEC     = os.path.expandvars(config["gpumd_exec"])
+USE_CALORINE   = bool(config.get("use_calorine", False))
+
 RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
 
 gb_cfg = config["gb_generation"]
 # minimum length of supercell in x/y/z axes in angstroms
-BOX_SIZE         = np.array([float(gb_cfg["x_nm"]) * 10, float(gb_cfg["y_nm"]) * 10, float(gb_cfg["z_nm"]) * 10])
-N_RUNS           = int(gb_cfg["n_runs"])
-F_MAX            = float(gb_cfg.get("f_max", 0.1))
-STEPS            = int(gb_cfg.get("steps", 500))
-T_START          = float(gb_cfg["t_start"])
-T_END            = float(gb_cfg["t_end"])
-TOTAL_TIME_PS    = float(gb_cfg["total_time_ps"])
-TIMESTEP_FS      = float(gb_cfg["timestep_fs"])
-TAU_T            = float(gb_cfg["tau_t"])
-PRESSURE_GPA     = float(gb_cfg["pressure_gpa"])
-BULK_MODULUS_GPA = float(gb_cfg["bulk_modulus_gpa"])
-TAU_P            = float(gb_cfg["tau_p"])
-DEBUG            = bool(gb_cfg.get("debug", False))
+BOX_SIZE    = np.array([float(gb_cfg["x_nm"]) * 10, float(gb_cfg["y_nm"]) * 10, float(gb_cfg["z_nm"]) * 10])
+N_RUNS      = int(gb_cfg["n_runs"])
+TIMESTEP_FS = float(gb_cfg["timestep_fs"])
+DEBUG       = bool(gb_cfg.get("debug", False))
 
-# Derived
+# NPT parameters
+npt_cfg          = gb_cfg["npt"]
+T_START          = float(npt_cfg["t_start"])
+T_END            = float(npt_cfg["t_end"])
+TAU_T            = float(npt_cfg["tau_t"])
+PRESSURE_GPA     = float(npt_cfg["pressure_gpa"])
+BULK_MODULUS_GPA = float(npt_cfg["bulk_modulus_gpa"])
+TAU_P            = float(npt_cfg["tau_p"])
+TOTAL_TIME_PS    = float(npt_cfg["total_time_ps"])
+
+# NVT parameters
+nvt_cfg           = gb_cfg["nvt"]
+NVT_T_START       = float(nvt_cfg["t_start"])
+NVT_T_END         = float(nvt_cfg["t_end"])
+NVT_TAU_T         = float(nvt_cfg["tau_t"])
+NVT_TOTAL_TIME_PS = float(nvt_cfg["total_time_ps"])
+
+# Derived — NPT
 N_STEPS         = int(TOTAL_TIME_PS * 1000.0 / TIMESTEP_FS)
 DUMP_INTERVAL   = int(gb_cfg["dump_interval"]) if DEBUG else N_STEPS - 1  # only dump at the end if not debugging
 THERMO_INTERVAL = max(int(N_STEPS / 100), 1)  # aim for ~100 thermo points per run
+
+# Derived — NVT
+NVT_N_STEPS         = int(NVT_TOTAL_TIME_PS * 1000.0 / TIMESTEP_FS)
+NVT_DUMP_INTERVAL   = int(gb_cfg["dump_interval"]) if DEBUG else NVT_N_STEPS - 1
+NVT_THERMO_INTERVAL = max(int(NVT_N_STEPS / 100), 1)
 
 _raw_gbs = config["grain_boundaries"]
 # sigma: -1 in the config signals a bulk-only run (no grain boundary)
@@ -181,37 +201,8 @@ def build_gb_atoms(s_input, axis, sigma, plane):
     return atoms, (scale_x, scale_y, UC)
 
 
-def relax_with_lbfgs(atoms, fmax=F_MAX, steps=STEPS):
-    """
-    Relax atomic positions with LBFGS using CPUNEP.
 
-    Removes the worst of the high-energy overlaps that aimsgb introduces at
-    the grain boundary interface before handing off to the GPUMD annealing
-    step.  This keeps the MD from immediately exploding due to unphysical
-    forces.
-
-    Parameters
-    ----------
-    atoms : ase.Atoms
-        Structure to relax (will NOT be modified; a copy is returned).
-    fmax  : float
-        Force convergence threshold in eV/Å.
-    steps : int
-        Maximum number of LBFGS steps.
-
-    Returns
-    -------
-    relaxed : ase.Atoms  (calculator detached)
-    """
-    relaxed = atoms.copy()
-    relaxed.calc = CPUNEP(NEP_MODEL_FILE)
-    opt = LBFGS(relaxed, logfile=None)
-    opt.run(fmax=fmax, steps=steps)
-    relaxed.calc = None  # detach so the GPUMD calc can be attached cleanly
-    return relaxed
-
-
-def cool_with_gpumd(atoms, run_dir):
+def cool_with_gpumd(atoms, npt_dir):
     """
     Run a GPUMD npt_scr cooling ramp: T_START -> T_END over TOTAL_TIME_PS.
 
@@ -219,10 +210,10 @@ def cool_with_gpumd(atoms, run_dir):
     to be 100 x timestep in GPUMD). Too small causes unphysical velocity kicks;
     too large and the temperature lags the ramp target.
     """
-    os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(npt_dir, exist_ok=True)
 
     # Remove stale movie.xyz so calorine reads the correct run's output
-    movie_path = os.path.join(run_dir, "movie.xyz")
+    movie_path = os.path.join(npt_dir, "movie.xyz")
     if os.path.exists(movie_path):
         os.remove(movie_path)
 
@@ -230,7 +221,7 @@ def cool_with_gpumd(atoms, run_dir):
         NEP_MODEL_FILE,
         command=GPUMD_EXEC,
         gpu_identifier_index=0,
-        directory=run_dir,
+        directory=npt_dir,
         atoms=atoms,
     )
     atoms = atoms.copy()
@@ -240,12 +231,10 @@ def cool_with_gpumd(atoms, run_dir):
         ("velocity",  T_START),
         ("time_step", TIMESTEP_FS),
         ("ensemble",  ["npt_scr", T_START, T_END, TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]),
+        ("dump_thermo", THERMO_INTERVAL),
         ("dump_position", DUMP_INTERVAL),
         ("run", N_STEPS),
     ]
-
-    if DEBUG:
-        md_params.insert(3, ("dump_thermo", THERMO_INTERVAL))
 
     cooled_atoms = calc.run_custom_md(
         md_params,
@@ -254,7 +243,178 @@ def cool_with_gpumd(atoms, run_dir):
     cooled_atoms.pbc = atoms.pbc
     cooled_atoms.wrap()
 
-    return cooled_atoms
+    # Read potential energy from the last row of thermo.out (column 2 = U [eV])
+    thermo_data = np.loadtxt(os.path.join(npt_dir, "thermo.out"))
+    if thermo_data.ndim == 1:
+        energy_ev = float(thermo_data[2])
+    else:
+        energy_ev = float(thermo_data[-1, 2])
+
+    return cooled_atoms, energy_ev
+
+
+def cool_with_gpumd_direct(atoms, npt_dir):
+    """
+    Run a GPUMD npt_scr cooling ramp by invoking the GPUMD executable directly.
+    Used when the potential is an empirical potential (SW, Tersoff, tersoff_mini, ...)
+    that calorine/GPUNEP does not support.
+
+    Returns
+    -------
+    cooled_atoms : ase.Atoms
+    energy_ev    : float   potential energy of the final frame [eV]
+    """
+    os.makedirs(npt_dir, exist_ok=True)
+
+    # Remove stale output files
+    for fname in ("thermo.out", "dump.xyz"):
+        fpath = os.path.join(npt_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
+    # Add mass if needed
+    if not atoms.has('mass'):
+        atoms.new_array('mass', atoms.get_masses())
+
+    # Write structure (velocities will be initialised by the 'velocity' keyword in run.in)
+    write(os.path.join(npt_dir, "model.xyz"), atoms, format="extxyz")
+
+    rel_potential = os.path.relpath(NEP_MODEL_FILE, npt_dir)
+    lines = [
+        f"potential {rel_potential}",
+        f"velocity {T_START}",
+        f"time_step {TIMESTEP_FS}",
+        f"ensemble npt_scr {T_START} {T_END} {TAU_T} {PRESSURE_GPA} {BULK_MODULUS_GPA} {TAU_P}",
+        f"dump_thermo {THERMO_INTERVAL}",   # always write thermo for energy read-back
+        f"dump_position {DUMP_INTERVAL}",   # positions + cell (no vel/force)
+        f"run {N_STEPS}",
+    ]
+    with open(os.path.join(npt_dir, "run.in"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+    with open(os.path.join(npt_dir, "stdout"), "w") as stdout_f:
+        result = subprocess.run(
+            [GPUMD_EXEC], cwd=npt_dir,
+            stdout=stdout_f, stderr=subprocess.PIPE,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"GPUMD NPT failed (rc={result.returncode}):\n"
+            + result.stderr.decode()
+        )
+
+    # Read final structure from movie.xyz (last frame; cell is preserved in extxyz)
+    cooled_atoms = read(os.path.join(npt_dir, "movie.xyz"), index=-1, format="extxyz")
+    cooled_atoms.pbc = atoms.pbc
+    cooled_atoms.wrap()
+
+    # Read potential energy from the last row of thermo.out (column 2 = U [eV])
+    thermo_data = np.loadtxt(os.path.join(npt_dir, "thermo.out"))
+    if thermo_data.ndim == 1:
+        energy_ev = float(thermo_data[2])
+    else:
+        energy_ev = float(thermo_data[-1, 2])
+
+    return cooled_atoms, energy_ev
+
+
+def nvt_with_gpumd(atoms, nvt_dir):
+    """
+    Run a GPUMD nvt_nhc equilibration: NVT_T_START -> NVT_T_END over NVT_TOTAL_TIME_PS.
+
+    Uses the Nosé-Hoover chain thermostat (nvt_nhc). NVT_TAU_T (in timesteps)
+    sets the coupling timescale; the same guidance as TAU_T applies.
+    """
+    os.makedirs(nvt_dir, exist_ok=True)
+
+    movie_path = os.path.join(nvt_dir, "movie.xyz")
+    if os.path.exists(movie_path):
+        os.remove(movie_path)
+
+    calc = GPUNEP(
+        NEP_MODEL_FILE,
+        command=GPUMD_EXEC,
+        gpu_identifier_index=0,
+        directory=nvt_dir,
+        atoms=atoms,
+    )
+    atoms = atoms.copy()
+    atoms.calc = calc
+
+    md_params = [
+        ("velocity",      NVT_T_START),
+        ("time_step",     TIMESTEP_FS),
+        ("ensemble",      ["nvt_nhc", NVT_T_START, NVT_T_END, NVT_TAU_T]),
+        ("dump_thermo",   NVT_THERMO_INTERVAL),
+        ("dump_position", NVT_DUMP_INTERVAL),
+        ("run",           NVT_N_STEPS),
+    ]
+
+    nvt_atoms = calc.run_custom_md(md_params, return_last_atoms=True)
+    nvt_atoms.pbc = atoms.pbc
+    nvt_atoms.wrap()
+
+    thermo_data = np.loadtxt(os.path.join(nvt_dir, "thermo.out"))
+    energy_ev = float(thermo_data[2] if thermo_data.ndim == 1 else thermo_data[-1, 2])
+
+    return nvt_atoms, energy_ev
+
+
+def nvt_with_gpumd_direct(atoms, nvt_dir):
+    """
+    Run a GPUMD nvt_nhc equilibration by invoking the GPUMD executable directly.
+    Used when the potential is an empirical potential (SW, Tersoff, tersoff_mini, ...)
+    that calorine/GPUNEP does not support.
+
+    Returns
+    -------
+    nvt_atoms : ase.Atoms
+    energy_ev : float   potential energy of the final frame [eV]
+    """
+    os.makedirs(nvt_dir, exist_ok=True)
+
+    for fname in ("thermo.out", "movie.xyz"):
+        fpath = os.path.join(nvt_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
+    if not atoms.has('mass'):
+        atoms.new_array('mass', atoms.get_masses())
+
+    write(os.path.join(nvt_dir, "model.xyz"), atoms, format="extxyz")
+
+    rel_potential = os.path.relpath(NEP_MODEL_FILE, nvt_dir)
+    lines = [
+        f"potential {rel_potential}",
+        f"velocity {NVT_T_START}",
+        f"time_step {TIMESTEP_FS}",
+        f"ensemble nvt_nhc {NVT_T_START} {NVT_T_END} {NVT_TAU_T}",
+        f"dump_thermo {NVT_THERMO_INTERVAL}",
+        f"dump_position {NVT_DUMP_INTERVAL}",
+        f"run {NVT_N_STEPS}",
+    ]
+    with open(os.path.join(nvt_dir, "run.in"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+    with open(os.path.join(nvt_dir, "stdout"), "w") as stdout_f:
+        result = subprocess.run(
+            [GPUMD_EXEC], cwd=nvt_dir,
+            stdout=stdout_f, stderr=subprocess.PIPE,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"GPUMD NVT failed (rc={result.returncode}):\n"
+            + result.stderr.decode()
+        )
+
+    nvt_atoms = read(os.path.join(nvt_dir, "movie.xyz"), index=-1, format="extxyz")
+    nvt_atoms.pbc = atoms.pbc
+    nvt_atoms.wrap()
+
+    thermo_data = np.loadtxt(os.path.join(nvt_dir, "thermo.out"))
+    energy_ev = float(thermo_data[2] if thermo_data.ndim == 1 else thermo_data[-1, 2])
+
+    return nvt_atoms, energy_ev
 
 
 def plot_temperature_trace(run_dir, label, run_index):
@@ -333,6 +493,90 @@ def plot_temperature_trace(run_dir, label, run_index):
           f"max |residual|={max_residual:.1f} K "
           f"(RMS < ~50 K is generally acceptable for annealing)")
 
+def plot_nvt_diagnostics(nvt_dir, label, run_index):
+    """
+    Diagnostic plots for the NVT nvt_nhc equilibration step.
+
+    Three panels:
+      1. Temperature trace: actual T vs constant target — validates thermostat coupling.
+         Oscillations → NVT_TAU_T too small; persistent drift → NVT_TAU_T too large.
+      2. Potential energy U: should plateau after equilibration.
+         A downward drift means the system is still relaxing; increase NVT_TOTAL_TIME_PS.
+      3. Pressure components Pxx/Pyy/Pzz and mean pressure:
+         Large anisotropy or a large non-zero mean suggests residual stress in the GB.
+
+    thermo.out columns (GPUMD format, triclinic):
+        T  K  U  Pxx Pyy Pzz Pyz Pxz Pxy  ax ay az  bx by bz  cx cy cz
+    """
+    thermo_path = os.path.join(nvt_dir, "thermo.out")
+    if not os.path.exists(thermo_path):
+        print(f"    Warning: thermo.out not found in {nvt_dir}, skipping NVT diagnostics.")
+        return
+
+    import pandas as pd
+    thermo = pd.read_csv(
+        thermo_path,
+        sep=r"\s+",
+        header=None,
+        names=["T", "K", "U", "Pxx", "Pyy", "Pzz", "Pyz", "Pxz", "Pxy",
+               "ax", "ay", "az", "bx", "by", "bz", "cx", "cy", "cz"],
+    )
+
+    n = len(thermo)
+    time_ps = np.arange(n) * NVT_THERMO_INTERVAL * TIMESTEP_FS / 1000.0
+    target_T = np.linspace(NVT_T_START, NVT_T_END, n)
+
+    fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
+    plt.suptitle(
+        f"{label} — run {run_index} NVT diagnostics\n"
+        f"nvt_nhc: T={NVT_T_START:.0f}→{NVT_T_END:.0f} K, "
+        f"NVT_TAU_T={NVT_TAU_T:.0f} steps ({NVT_TAU_T * TIMESTEP_FS / 1000:.1f} ps coupling)",
+        fontsize=10,
+    )
+
+    # Panel 1: Temperature trace
+    axes[0].plot(time_ps, thermo["T"], color="tomato", linewidth=0.8, label="Actual T")
+    axes[0].plot(time_ps, target_T, color="steelblue", linewidth=1.5,
+                 linestyle="--", label="Target T")
+    axes[0].set_ylabel("Temperature [K]")
+    axes[0].legend(fontsize=8)
+    axes[0].set_title(
+        "Oscillations → NVT_TAU_T too small; persistent drift → NVT_TAU_T too large",
+        fontsize=8,
+    )
+
+    # Panel 2: Potential energy
+    axes[1].plot(time_ps, thermo["U"], color="mediumseagreen", linewidth=0.8)
+    axes[1].set_ylabel("Potential energy [eV]")
+    axes[1].set_title("Should plateau; downward drift → increase NVT_TOTAL_TIME_PS", fontsize=8)
+
+    # Panel 3: Pressure components
+    mean_p = (thermo["Pxx"] + thermo["Pyy"] + thermo["Pzz"]) / 3.0
+    axes[2].plot(time_ps, thermo["Pxx"], color="lightcoral",      linewidth=0.6, alpha=0.7, label="Pxx")
+    axes[2].plot(time_ps, thermo["Pyy"], color="cornflowerblue",  linewidth=0.6, alpha=0.7, label="Pyy")
+    axes[2].plot(time_ps, thermo["Pzz"], color="mediumorchid",    linewidth=0.6, alpha=0.7, label="Pzz")
+    axes[2].plot(time_ps, mean_p,        color="black",           linewidth=1.2,             label="Mean P")
+    axes[2].axhline(0, color="gray", linewidth=0.5, linestyle="--")
+    axes[2].set_ylabel("Pressure [GPa]")
+    axes[2].set_xlabel("Time [ps]")
+    axes[2].legend(fontsize=7)
+    axes[2].set_title("Large anisotropy or non-zero mean → residual GB stress", fontsize=8)
+
+    plt.tight_layout()
+    out_path = os.path.join(nvt_dir, "nvt_diagnostics.png")
+    plt.savefig(out_path)
+    plt.close()
+    print(f"    NVT diagnostics saved to {out_path}")
+
+    # Quick numeric summary
+    mean_T    = thermo["T"].mean()
+    std_T     = thermo["T"].std()
+    drift_U   = float(thermo["U"].iloc[-1] - thermo["U"].iloc[0])
+    mean_p_val = mean_p.mean()
+    print(f"    NVT summary: mean T={mean_T:.1f} K (±{std_T:.1f} K), "
+          f"ΔU={drift_U:.3f} eV, mean P={mean_p_val:.3f} GPa")
+
+
 # ---------------------------------------------------------------------------
 # Bulk Si (no-GB) helper
 # ---------------------------------------------------------------------------
@@ -396,7 +640,9 @@ def process_gb(axis, sigma, plane, s_input, start_run=0):
         print(f"  axis={axis}, sigma={sigma}, plane={plane}")
     if start_run > 0:
         print(f"  Resuming from run {start_run} ({start_run}/{N_RUNS} already done)")
-    print(f"  n_runs={N_RUNS - start_run} remaining, T: {T_START}K -> {T_END}K over {TOTAL_TIME_PS}ps")
+    print(f"  n_runs={N_RUNS - start_run} remaining")
+    print(f"  NPT: {T_START}K -> {T_END}K over {TOTAL_TIME_PS}ps")
+    print(f"  NVT: {NVT_T_START}K -> {NVT_T_END}K over {NVT_TOTAL_TIME_PS}ps")
     print(f"{'='*60}")
 
     # Build initial structure
@@ -430,46 +676,40 @@ def process_gb(axis, sigma, plane, s_input, start_run=0):
             print(f"\n  Run {i+1}/{N_RUNS}...")
 
             run_dir = os.path.join(out_dir, f"run_{i}")
+            npt_dir = os.path.join(run_dir, "npt")
+            nvt_dir = os.path.join(run_dir, "nvt")
             start_atoms = gb_atoms.copy()
 
-            # Step 4 — LBFGS pre-relaxation
-            # Insert between structure build (step 3) and GPUMD annealing (step 5).
-            # This quenches the high-energy atoms at the GB interface so the MD
-            # timestep doesn't blow up on the first few steps.
-            print(f"    Relaxing with LBFGS...")
-            start_atoms = relax_with_lbfgs(start_atoms)
-            print(f"    Finished relaxing...")
-
-            # Anneal with GPUMD
-            cooled_atoms = cool_with_gpumd(start_atoms, run_dir=run_dir)
-            calc = CPUNEP(NEP_MODEL_FILE)
-            cooled_atoms.calc = calc
-            energy = cooled_atoms.get_potential_energy()
-            print(f"    Cooling done. Energy = {energy:.6f} eV")
+            # NPT anneal
+            if USE_CALORINE:
+                cooled_atoms, npt_energy = cool_with_gpumd(start_atoms, npt_dir=npt_dir)
+            else:
+                cooled_atoms, npt_energy = cool_with_gpumd_direct(start_atoms, npt_dir=npt_dir)
+            print(f"    NPT cooling done. Energy = {npt_energy:.6f} eV")
             if DEBUG:
-                plot_temperature_trace(run_dir, label, i)
+                plot_temperature_trace(npt_dir, label, i)
+
+            # NVT equilibration
+            if USE_CALORINE:
+                nvt_atoms, energy = nvt_with_gpumd(cooled_atoms, nvt_dir=nvt_dir)
+            else:
+                nvt_atoms, energy = nvt_with_gpumd_direct(cooled_atoms, nvt_dir=nvt_dir)
+            print(f"    NVT equilibration done. Energy = {energy:.6f} eV")
+            if DEBUG:
+                plot_nvt_diagnostics(nvt_dir, label, i)
 
             # Attach metadata to atoms.info so downstream scripts can read it back
             if not no_gb:
-                cooled_atoms.info["axis"]   = list(axis)
-                cooled_atoms.info["sigma"]  = sigma
-                cooled_atoms.info["plane"] = list(plane)
-            cooled_atoms.info["run_index"]  = i
-            cooled_atoms.info["energy_ev"]  = energy
-            cooled_atoms.info["gb_label"]   = label
+                nvt_atoms.info["axis"]   = list(axis)
+                nvt_atoms.info["sigma"]  = sigma
+                nvt_atoms.info["plane"] = list(plane)
+            nvt_atoms.info["run_index"]  = i
+            nvt_atoms.info["energy_ev"]  = energy
+            nvt_atoms.info["gb_label"]   = label
 
             # Write structure to per-run traj file
-            write(os.path.join(run_dir, "structure.traj"), cooled_atoms)
+            write(os.path.join(run_dir, "structure.traj"), nvt_atoms)
             writer.writerow([i, energy])
-
-            if DEBUG:
-                # Save per-run visualization
-                fig, ax = plt.subplots(figsize=(8, 4))
-                plot_atoms(cooled_atoms, ax, rotation="10x,10y,0z")
-                ax.set_title(f"{label} run {i} — E={energy:.4f} eV")
-                plt.tight_layout()
-                plt.savefig(os.path.join(run_dir, "relaxed.png"))
-                plt.close()
 
     # Print energy summary across runs
     all_structures = [
@@ -487,7 +727,7 @@ def process_gb(axis, sigma, plane, s_input, start_run=0):
 def main():
     if not os.path.exists(NEP_MODEL_FILE):
         raise FileNotFoundError(
-            f"NEP model not found at '{NEP_MODEL_FILE}'. "
+            f"Potential not found at '{NEP_MODEL_FILE}'. "
             "Check nep_model path in config."
         )
 

@@ -1,18 +1,14 @@
-# DATE: 2007-06-11 UNITS: metal CONTRIBUTOR: Aidan Thompson, athomps@sandia.gov CITATION: Stillinger and Weber,  Phys Rev B, 31, 5262, (1985)
-# Stillinger-Weber parameters for various elements and mixtures
-# multiple entries can be added to this file, LAMMPS reads the ones it needs
-# these entries are in LAMMPS "metal" units:
-#   epsilon = eV; sigma = Angstroms
-#   other quantities are unitless
+# Couldn't find exact documentation for old GPUMD v3.3.1
+# so this my best guess for order of parameters.
+# You can check out old GPUMD SW files here:
+# https://github.com/brucefan1983/GPUMD/tree/f76237c692ce286d27afb37dafcbb2874551a6a7/potentials/sw
 
-# format of a single entry (one or more lines):
-#   element 1, element 2, element 3, 
-#   epsilon, sigma, a, lambda, gamma, costheta0, A, B, p, q, tol
+# Format guess:
+# sw_1985 1
+# ε   λ   A   B   a   γ   σ   cos(θ₀)
 
-# Here are the original parameters in metal units, for Silicon from:
-#
-# Stillinger and Weber,  Phys. Rev. B, v. 31, p. 5262, (1985)
-#
+# Constants provided by (Lee and Hwang 2012) specifically for thermal conduction in Si
+# https://journals.aps.org/prb/abstract/10.1103/PhysRevB.85.125204
 
-Si Si Si 2.1683  2.0951  1.80  21.0  1.20  -0.333333333333
-         7.049556277  0.6022245584  4.0  0.0 0.0
+sw_1985 1
+1.41992 29.5304 7.049556277 0.6022245584 1.80 1.20 2.1051937 -3.333333333333333e-1
