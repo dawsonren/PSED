@@ -110,13 +110,18 @@ TIMESTEP_FS      = float(rnemd_cfg["timestep_fs"])
 N_CYCLES         = int(rnemd_cfg["n_cycles"])
 N_RUNS           = int(rnemd_cfg.get("n_runs", 3))
 ENSEMBLE         = rnemd_cfg.get("ensemble", "npt_scr").lower()
+# Treat "nvt" as shorthand for "nvt_nhc"
+if ENSEMBLE == "nvt":
+    ENSEMBLE = "nvt_nhc"
 TEMPERATURE_K    = float(rnemd_cfg["temperature_k"])
 if ENSEMBLE == "npt_scr":
     TAU_T            = float(rnemd_cfg["tau_t"])
     PRESSURE_GPA     = float(rnemd_cfg["pressure_gpa"])
     BULK_MODULUS_GPA = float(rnemd_cfg["bulk_modulus_gpa"])
     TAU_P            = float(rnemd_cfg["tau_p"])
-assert ENSEMBLE in ["npt_scr", "nve"], f"Unsupported ensemble: {ENSEMBLE}"
+elif ENSEMBLE == "nvt_nhc":
+    TAU_T            = float(rnemd_cfg.get("tau_t", 100.0))
+assert ENSEMBLE in ["npt_scr", "nve", "nvt_nhc"], f"Unsupported ensemble: {ENSEMBLE}"
 DEBUG_STRUCTURE   = bool(rnemd_cfg.get("debug_structure", False))
 DEBUG_DIAGNOSTICS = bool(rnemd_cfg.get("debug_diagnostics", True))
 INCLUDE_MOVIE     = bool(rnemd_cfg.get("include_movie", False))
@@ -126,9 +131,8 @@ N_WARMUP_CYCLES   = int(rnemd_cfg.get("n_warmup_cycles", 0))
 # GB list from YAML (used in main() to restrict processing to configured GBs only)
 BULK_SI_LABEL = "bulk_si"
 _raw_gbs = config["grain_boundaries"]
-NO_GB_MODE = len(_raw_gbs) == 1 and _raw_gbs[0].get("sigma") == -1
-GB_LIST = [] if NO_GB_MODE else [
-    (tuple(entry["axis"]), int(entry["sigma"]), tuple(entry["plane"]))
+GB_LIST = [
+    (tuple(entry.get("axis", [])), int(entry["sigma"]), tuple(entry.get("plane", [])))
     for entry in _raw_gbs
 ]
 
@@ -148,6 +152,8 @@ def _write_run_in(run_dir):
     ]
     if ENSEMBLE == "nve":
         lines.append("ensemble nve")
+    elif ENSEMBLE == "nvt_nhc":
+        lines.append(f"ensemble nvt_nhc {TEMPERATURE_K} {TEMPERATURE_K} {TAU_T}")
     elif ENSEMBLE == "npt_scr":
         lines.append(
             f"ensemble npt_scr {TEMPERATURE_K} {TEMPERATURE_K} "
@@ -250,6 +256,8 @@ def run_one_cycle(atoms, run_dir):
 
     if ENSEMBLE == "npt_scr":
         ensemble_params = ['npt_scr', TEMPERATURE_K, TEMPERATURE_K, TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]
+    elif ENSEMBLE == "nvt_nhc":
+        ensemble_params = ['nvt_nhc', TEMPERATURE_K, TEMPERATURE_K, TAU_T]
     elif ENSEMBLE == "nve":
         ensemble_params = ['nve']
 
@@ -735,13 +743,12 @@ def main():
 
     if args.gb:
         process_gb_type(args.gb)
-    elif NO_GB_MODE:
-        process_gb_type(BULK_SI_LABEL)
     else:
         if not GB_LIST:
             raise RuntimeError("No grain boundaries defined in config.")
         for (axis, sigma, plane) in GB_LIST:
-            process_gb_type(gb_label(axis, sigma, plane))
+            label = BULK_SI_LABEL if sigma == -1 else gb_label(axis, sigma, plane)
+            process_gb_type(label)
 
 
 if __name__ == "__main__":

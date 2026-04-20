@@ -57,6 +57,7 @@ from calorine.calculators import GPUNEP
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.work_coordination import gb_label, check_gb_generation_status
+from utils.gb_energy import bulk_energy_per_atom
 
 # ---------------------------------------------------------------------------
 # CLI and configuration
@@ -125,10 +126,9 @@ NVT_DUMP_INTERVAL   = int(gb_cfg["dump_interval"]) if DEBUG else NVT_N_STEPS - 1
 NVT_THERMO_INTERVAL = max(int(NVT_N_STEPS / 100), 1)
 
 _raw_gbs = config["grain_boundaries"]
-# sigma: -1 in the config signals a bulk-only run (no grain boundary)
-NO_GB_MODE = len(_raw_gbs) == 1 and _raw_gbs[0]["sigma"] == -1
-GB_LIST = [] if NO_GB_MODE else [
-    (tuple(entry["axis"]), int(entry["sigma"]), tuple(entry["plane"]))
+# sigma: -1 signals a bulk reference entry; axis/plane are ignored for those.
+GB_LIST = [
+    (tuple(entry.get("axis", [])), int(entry["sigma"]), tuple(entry.get("plane", [])))
     for entry in _raw_gbs
 ]
 
@@ -614,7 +614,10 @@ def build_bulk_atoms(s_input):
 # Main loop
 # ---------------------------------------------------------------------------
 
-def process_gb(axis, sigma, plane, s_input, start_run=0):
+_EV_ANG2_TO_J_M2 = 16.0218
+
+
+def process_gb(axis, sigma, plane, s_input, start_run=0, e_bulk_per_atom=None):
     # sigma == -1 signals a bulk-only run (no grain boundary)
     no_gb = (sigma == -1)
 
@@ -665,12 +668,17 @@ def process_gb(axis, sigma, plane, s_input, start_run=0):
         # Save initial structure for reference
         write(os.path.join(out_dir, "initial.traj"), gb_atoms)
 
+    write_gamma = not no_gb and e_bulk_per_atom is not None
+
     # Open summary CSV (write fresh if starting from scratch, append if resuming)
     open_mode = "a" if start_run > 0 else "w"
     with open(summary_file, open_mode, newline="") as csvf:
         writer = csv.writer(csvf)
         if start_run == 0:
-            writer.writerow(["run_index", "energy_ev"])
+            header = ["run_index", "energy_ev"]
+            if write_gamma:
+                header.append("gamma_j_m2")
+            writer.writerow(header)
 
         for i in range(start_run, N_RUNS):
             print(f"\n  Run {i+1}/{N_RUNS}...")
@@ -707,9 +715,19 @@ def process_gb(axis, sigma, plane, s_input, start_run=0):
             nvt_atoms.info["energy_ev"]  = energy
             nvt_atoms.info["gb_label"]   = label
 
+            row = [i, energy]
+            if write_gamma:
+                cell = nvt_atoms.cell[:]
+                area = np.linalg.norm(cell[0]) * np.linalg.norm(cell[1])
+                gamma_ev = (energy - len(nvt_atoms) * e_bulk_per_atom) / (2.0 * area)
+                gamma_jm2 = gamma_ev * _EV_ANG2_TO_J_M2
+                nvt_atoms.info["gamma_j_m2"] = gamma_jm2
+                row.append(gamma_jm2)
+                print(f"    GB energy: {gamma_jm2:.4f} J/m²")
+
             # Write structure to per-run traj file
             write(os.path.join(run_dir, "structure.traj"), nvt_atoms)
-            writer.writerow([i, energy])
+            writer.writerow(row)
 
     # Print energy summary across runs
     all_structures = [
@@ -733,30 +751,39 @@ def main():
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    if NO_GB_MODE:
-        bulk_summary = os.path.join(RESULTS_DIR, BULK_SI_LABEL, "summary.csv")
-        if os.path.exists(bulk_summary):
-            with open(bulk_summary) as f:
-                n_done = sum(1 for _ in csv.reader(f)) - 1
-            if n_done >= N_RUNS:
-                print(f"Skipping: bulk_si already has {N_RUNS}/{N_RUNS} runs completed.")
-                return
-        print(f"Fetching Si structure from Materials Project (mp-149)...")
-        s_input = Grain.from_mp_id("mp-149")
-        process_gb(None, -1, None, s_input)
-    else:
-        gb_status = check_gb_generation_status(args.config)
-        all_done = all(info["runs_remaining"] == 0 for info in gb_status.values())
-        if all_done:
-            print(f"All {len(GB_LIST)} GBs already completed ({N_RUNS}/{N_RUNS} runs each). Nothing to do.")
-            return
-        print(f"Fetching Si structure from Materials Project (mp-149)...")
-        s_input = Grain.from_mp_id("mp-149")
-        for (axis, sigma, plane) in GB_LIST:
-            label = gb_label(axis, sigma, plane)
-            info = gb_status.get(label, {"status": "not_started", "runs_remaining": N_RUNS})
-            start_run = N_RUNS - info["runs_remaining"]
-            process_gb(axis, sigma, plane, s_input, start_run=start_run)
+    gb_status = check_gb_generation_status(args.config)
+    all_done = all(info["runs_remaining"] == 0 for info in gb_status.values())
+    if all_done:
+        print(f"All {len(GB_LIST)} entries already completed ({N_RUNS}/{N_RUNS} runs each). Nothing to do.")
+        return
+
+    print(f"Fetching Si structure from Materials Project (mp-149)...")
+    s_input = Grain.from_mp_id("mp-149")
+
+    # Bulk entries first so e_bulk is available when GB entries run.
+    bulk_entries = [(ax, sg, pl) for (ax, sg, pl) in GB_LIST if sg == -1]
+    gb_entries   = [(ax, sg, pl) for (ax, sg, pl) in GB_LIST if sg != -1]
+
+    for (axis, sigma, plane) in bulk_entries:
+        info = gb_status.get(BULK_SI_LABEL, {"status": "not_started", "runs_remaining": N_RUNS})
+        start_run = N_RUNS - info["runs_remaining"]
+        process_gb(axis, sigma, plane, s_input, start_run=start_run)
+
+    # Load bulk reference (None if no bulk entry was specified)
+    bulk_dir = os.path.join(RESULTS_DIR, BULK_SI_LABEL)
+    e_bulk = None
+    if os.path.isdir(bulk_dir):
+        try:
+            e_bulk, _ = bulk_energy_per_atom(bulk_dir)
+            print(f"\nBulk reference: {e_bulk:.6f} eV/atom — will compute GB energies.")
+        except FileNotFoundError:
+            print("\nWarning: bulk_si results not found; summary.csv will omit gamma_j_m2.")
+
+    for (axis, sigma, plane) in gb_entries:
+        label = gb_label(axis, sigma, plane)
+        info = gb_status.get(label, {"status": "not_started", "runs_remaining": N_RUNS})
+        start_run = N_RUNS - info["runs_remaining"]
+        process_gb(axis, sigma, plane, s_input, start_run=start_run, e_bulk_per_atom=e_bulk)
 
     print("\nAll structures processed.")
 

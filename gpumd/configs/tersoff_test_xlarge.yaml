@@ -1,0 +1,96 @@
+# Create 100nm length GBs for testing
+
+# paths (relative to gpumd/ root)
+nep_model: potentials/Si_Fan_2019.txt
+gpumd_exec: /home/djr2473/exec/gpumd
+
+# use calorine flag
+use_calorine: true
+
+# GB generation parameters
+gb_generation:
+  # control simulation box size (MD has heat flow over z-axis)
+  x_nm: 2.5
+  y_nm: 2.5
+  z_nm: 800.0
+  timestep_fs: 1.0
+  # control replications
+  n_runs: 1
+  # control npt simulation parameters
+  npt:
+    t_start: 10.0           # K — annealing start temperature
+    t_end: 675.0            # K — annealing end temperature
+    tau_t: 200.0            # thermostat coupling (in timesteps)
+    pressure_gpa: 0         # target pressure [GPa]
+    bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
+    tau_p: 1000             # barostat coupling (in timesteps)
+    total_time_ps: 1000.0
+  # control NVT simulation parameters
+  nvt:
+    t_start: 675
+    t_end: 675
+    tau_t: 200
+    total_time_ps: 300.0
+  # control debugging plots (can be slow) and intermediate structure dumps
+  debug: true
+  dump_interval: 50000
+
+# RNEMD parameters
+rnemd:
+  # control rnemd setup
+  nbins: 800                # must be even (symmetric PBC paths)
+  # control simulation length, total steps = n_cycles * steps_per_cycle
+  timestep_fs: 2
+  n_warmup_cycles: 1000          # warmup cycles to build gradient before recording data
+  n_cycles: 1000                  # number of production cycles (velocity swaps after each)
+  steps_per_cycle: 50           # controls the frequency of velocity swaps
+  # control replications
+  n_runs: 5                # independent rNEMD simulations per structure (for uncertainty)
+  # control simulation parameters
+  ensemble: "nve"
+  temperature_k: 675
+  # control debugging plots (can be slow)
+  debug_structure: false
+  debug_diagnostics: true
+  include_movie: false
+  debug_animation: true   # save temperature_profile.mp4 (one line per frame)
+
+# GB specifications (sigma: -1 will create a bulk structure with no GB)
+grain_boundaries:
+- sigma: -1
+- axis: [1, 1, 0]
+  sigma: 3
+  plane: [-1, 1, 1]
+- axis: [1, 1, 0]
+  sigma: 3
+  plane: [1, -1, 2]
+- axis: [1, 1, 0]
+  sigma: 3
+  plane: [1, 1, 0]
+- axis: [1, 1, 0]
+  sigma: 9
+  plane: [-1, 1, -4]
+- axis: [1, 1, 0]
+  sigma: 9
+  plane: [-2, 2, 1]
+- axis: [1, 1, 0]
+  sigma: 9
+  plane: [1, 1, 0]
+- axis: [1, 1, 0]
+  sigma: 27
+  plane: [-5, 5, 2]
+- axis: [1, 1, 0]
+  sigma: 27
+  plane: [1, -1, 5]
+- axis: [1, 1, 0]
+  sigma: 27
+  plane: [1, 1, 0]
+- axis: [2, 1, 0]
+  sigma: 27
+  plane: [-1, 2, 2]
+- axis: [2, 1, 0]
+  sigma: 27
+  plane: [2, -4, 5]
+- axis: [2, 1, 0]
+  sigma: 27
+  plane: [2, 1, 0]

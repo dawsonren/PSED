@@ -49,10 +49,11 @@ def check_gb_generation_status(yaml_path):
 
     status = {}
     for entry in config["grain_boundaries"]:
-        axis = tuple(entry["axis"])
         sigma = entry["sigma"]
-        plane = tuple(entry["plane"])
-        label = gb_label(axis, sigma, plane)
+        if sigma == -1:
+            label = "bulk_si"
+        else:
+            label = gb_label(tuple(entry["axis"]), sigma, tuple(entry["plane"]))
 
         gb_dir = results_dir / label
         if not gb_dir.exists():
