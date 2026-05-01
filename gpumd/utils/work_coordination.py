@@ -4,9 +4,16 @@ for GB generation and kappa calculation (either RNEMD/HNEMD)
 """
 
 import csv
+import os
+import socket
+import time
 from pathlib import Path
 
 import yaml
+
+# A claim older than this (with no completion) is treated as stale and re-claimable.
+# Should be comfortably longer than the expected wall time for one GB.
+CLAIM_STALE_HOURS = 8
 
 
 def gb_label(axis, sigma, plane):
@@ -14,6 +21,53 @@ def gb_label(axis, sigma, plane):
     a = "".join(str(x) for x in axis)
     p = "".join(str(x) for x in plane)
     return f"{a}_sigma{sigma}_{p}"
+
+
+def try_claim(claim_path, stale_hours=CLAIM_STALE_HOURS):
+    """
+    Atomically claim a work slot by creating a sentinel file.
+
+    Returns True if this process acquired the claim, False if another worker
+    holds a fresh claim.  A claim is considered stale (and re-claimable) when
+    the file is older than stale_hours.  The file records hostname:pid for
+    debugging.
+    """
+    claim_path = Path(claim_path)
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _atomic_create():
+        fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, f"{socket.gethostname()}:{os.getpid()}\n".encode())
+        os.close(fd)
+
+    try:
+        _atomic_create()
+        return True
+    except FileExistsError:
+        pass
+
+    # Claim exists — steal it if stale
+    try:
+        age_hours = (time.time() - claim_path.stat().st_mtime) / 3600
+        if age_hours > stale_hours:
+            claim_path.unlink(missing_ok=True)
+            try:
+                _atomic_create()
+                return True
+            except FileExistsError:
+                pass  # Another worker grabbed it first
+    except FileNotFoundError:
+        pass  # Claim was released between our stat and unlink
+
+    return False
+
+
+def release_claim(claim_path):
+    """Remove a claim file once work is done (or on error)."""
+    try:
+        Path(claim_path).unlink()
+    except FileNotFoundError:
+        pass  # Already gone — stale claim was stolen, or double-release
 
 
 def check_gb_generation_status(yaml_path):
@@ -71,6 +125,67 @@ def check_gb_generation_status(yaml_path):
         runs_remaining = max(n_runs - n_data_rows, 0)
         status[label] = {
             "status": "completed" if runs_remaining == 0 else "in_progress",
+            "runs_remaining": runs_remaining,
+        }
+
+    return status
+
+
+def check_rnemd_status(yaml_path):
+    """
+    Check completion status of rNEMD runs for all grain boundaries in a config.
+
+    The GPUMD root is inferred as the grandparent of the yaml file.  Results
+    are expected at:
+        <gpumd_root>/results/<config_stem>/rnemd/<gb_label>/structure_*/run_*/final_atoms.traj
+
+    A GB is "completed" when the number of final_atoms.traj files found across
+    all structure_*/run_*/ subdirectories equals n_runs from rnemd.n_runs in
+    the config.
+
+    Args:
+        yaml_path: Path to a unified YAML config file (e.g. configs/small_box.yaml).
+
+    Returns:
+        dict mapping gb_label (str) -> {"status": str, "runs_remaining": int}, where
+        status is one of "completed", "in_progress", or "not_started".
+    """
+    yaml_path = Path(yaml_path).resolve()
+    gpumd_root = yaml_path.parent.parent
+    config_name = yaml_path.stem
+
+    with open(yaml_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    n_runs = int(config["rnemd"]["n_runs"])
+    results_dir = gpumd_root / "results" / config_name / "rnemd"
+
+    status = {}
+    for entry in config["grain_boundaries"]:
+        sigma = entry["sigma"]
+        label = "bulk_si" if sigma == -1 else gb_label(
+            tuple(entry["axis"]), sigma, tuple(entry["plane"])
+        )
+
+        gb_dir = results_dir / label
+        if not gb_dir.exists():
+            status[label] = {"status": "not_started", "runs_remaining": n_runs}
+            continue
+
+        n_completed = 0
+        for struct_dir in gb_dir.iterdir():
+            if not (struct_dir.is_dir() and struct_dir.name.startswith("structure_")):
+                continue
+            for run_dir in struct_dir.iterdir():
+                if run_dir.is_dir() and run_dir.name.startswith("run_"):
+                    if (run_dir / "final_atoms.traj").exists():
+                        n_completed += 1
+
+        runs_remaining = max(n_runs - n_completed, 0)
+        status[label] = {
+            "status": "completed" if runs_remaining == 0 else (
+                "in_progress" if n_completed > 0 else "not_started"
+            ),
             "runs_remaining": runs_remaining,
         }
 

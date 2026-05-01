@@ -71,7 +71,7 @@ def read_gb_generation(config_dir, config):
                 "label": label, "status": "in_progress",
                 "runs_done": 0, "runs_target": runs_target,
                 "n_atoms": None, "cell_x": None, "cell_y": None, "cell_z": None,
-                "best_energy": None,
+                "best_energy": None, "gb_energy": None,
             })
             continue
 
@@ -82,12 +82,16 @@ def read_gb_generation(config_dir, config):
                 "label": label, "status": "in_progress",
                 "runs_done": 0, "runs_target": runs_target,
                 "n_atoms": None, "cell_x": None, "cell_y": None, "cell_z": None,
-                "best_energy": None,
+                "best_energy": None, "gb_energy": None,
             })
             continue
         runs_done   = len(df)
         best_idx    = int(df.loc[df["energy_ev"].idxmin(), "run_index"])
         best_energy = float(df["energy_ev"].min())
+
+        gb_energy = None
+        if "gamma_j_m2" in df.columns:
+            gb_energy = float(df.loc[df["energy_ev"].idxmin(), "gamma_j_m2"])
 
         if runs_target is None or runs_done >= runs_target:
             status = "completed"
@@ -112,6 +116,7 @@ def read_gb_generation(config_dir, config):
             "n_atoms": n_atoms,
             "cell_x": cell_x, "cell_y": cell_y, "cell_z": cell_z,
             "best_energy": best_energy,
+            "gb_energy": gb_energy,
         })
 
     return rows
@@ -125,7 +130,7 @@ def print_gbgen_table(rows):
     w = max(len(r["label"]) for r in rows)
 
     hdr = (f"  {'GB Label':<{w}}  {'Status':<12}  {'Runs':>6}  "
-           f"{'n_atoms':>7}  {'Cell (Å)':>28}  {'Best E (eV)':>14}")
+           f"{'n_atoms':>7}  {'Cell (Å)':>28}  {'Best E (eV)':>14}  {'γ (J/m²)':>10}")
     print(hdr)
     print("  " + "─" * (len(hdr) - 2))
 
@@ -136,10 +141,11 @@ def print_gbgen_table(rows):
             cell_str = f"{r['cell_x']:.1f} × {r['cell_y']:.1f} × {r['cell_z']:.1f}"
         else:
             cell_str = "?"
-        energy_str = f"{r['best_energy']:.2f}" if r["best_energy"] is not None else "?"
+        energy_str  = f"{r['best_energy']:.2f}" if r["best_energy"] is not None else "?"
+        gb_energy_str = f"{r['gb_energy']:.4f}" if r.get("gb_energy") is not None else "—"
 
         print(f"  {r['label']:<{w}}  {r['status']:<12}  {runs_str:>6}  "
-              f"{natoms_str:>7}  {cell_str:>28}  {energy_str:>14}")
+              f"{natoms_str:>7}  {cell_str:>28}  {energy_str:>14}  {gb_energy_str:>10}")
 
 
 # ---------------------------------------------------------------------------

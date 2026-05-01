@@ -18,12 +18,6 @@ __pycache__/
 *.gif
 *.png
 *.csv
-!gpumd/results/tersoff_test/gb_generation/110_sigma3_-111/run_0/structure.traj
-!gpumd/results/tersoff_test/gb_generation/110_sigma3_1-12/run_0/structure.traj
-!gpumd/results/tersoff_test/gb_generation/110_sigma3_110/run_0/structure.traj
-!gpumd/results/tersoff_test/gb_generation/110_sigma9_-11-4/run_0/structure.traj
-!gpumd/results/tersoff_test/gb_generation/110_sigma9_-221/run_0/structure.traj
-!gpumd/results/tersoff_test/gb_generation/110_sigma9_110/run_0/structure.traj
 
 # Distribution / packaging
 .Python

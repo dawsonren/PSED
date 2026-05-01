@@ -61,7 +61,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.muller_plathe import swap_velocities, bin_atoms
 from utils.rnemd_stats import check_steady_state, aggregate_run_results, format_result_summary
 from utils.rnemd_plots import plot_temperature_profile, plot_energy_diagnostics, plot_temperature_profile_animated
-from utils.work_coordination import gb_label
+from utils.work_coordination import (
+    gb_label, check_rnemd_status,
+    try_claim, release_claim, CLAIM_STALE_HOURS,
+)
 
 # ---------------------------------------------------------------------------
 # CLI and configuration
@@ -743,12 +746,34 @@ def main():
 
     if args.gb:
         process_gb_type(args.gb)
-    else:
-        if not GB_LIST:
-            raise RuntimeError("No grain boundaries defined in config.")
-        for (axis, sigma, plane) in GB_LIST:
-            label = BULK_SI_LABEL if sigma == -1 else gb_label(axis, sigma, plane)
+        return
+
+    if not GB_LIST:
+        raise RuntimeError("No grain boundaries defined in config.")
+
+    rnemd_status = check_rnemd_status(args.config)
+    all_done = all(info["runs_remaining"] == 0 for info in rnemd_status.values())
+    if all_done:
+        print(f"All {len(GB_LIST)} entries already completed ({N_RUNS}/{N_RUNS} runs each). Nothing to do.")
+        return
+
+    for (axis, sigma, plane) in GB_LIST:
+        label = BULK_SI_LABEL if sigma == -1 else gb_label(axis, sigma, plane)
+        info = rnemd_status.get(label, {"status": "not_started", "runs_remaining": N_RUNS})
+
+        if info["status"] == "completed":
+            print(f"\nSkipping {label}: already completed.")
+            continue
+
+        claim_path = os.path.join(RNEMD_RESULTS_DIR, label, ".claimed")
+        if not try_claim(claim_path, stale_hours=CLAIM_STALE_HOURS):
+            print(f"\nSkipping {label}: claimed by another worker.")
+            continue
+
+        try:
             process_gb_type(label)
+        finally:
+            release_claim(claim_path)
 
 
 if __name__ == "__main__":
