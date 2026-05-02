@@ -14,22 +14,36 @@ gb_generation:
   timestep_fs: 1.0
   # control replications
   n_runs: 5
-  # control npt simulation parameters
-  npt:
-    t_start: [10, 1500, 1500, 675]           # K — annealing start temperature
-    t_end: [1500, 1500, 675, 675]            # K — annealing end temperature
-    tau_t: 200.0            # thermostat coupling (in timesteps)
-    pressure_gpa: 0         # target pressure [GPa]
-    bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
-    tau_p: 1000             # barostat coupling (in timesteps)
+  # control initial npt
+  npt_start:
+    t_start: 10
+    t_end: 675
+    tau_t: 100.0
+    pressure_gpa: 0
+    bulk_modulus_gpa: 100
+    tau_p: 1000
+    total_time_ps: 20.0
+  nvt_anneal:
+    t_start: [675, 1500, 1500]
+    t_end: [1500, 1500, 675]
+    tau_t: 100.0
     total_time_ps: [200, 100, 600, 100]
-  # control NVT simulation parameters
+    gb_margin_nm: 10
   nvt:
     t_start: 675
     t_end: 675
-    tau_t: 200
-    total_time_ps: 100.0
+    tau_t: 100.0         
+    total_time_ps: 50.0
+  npt:
+    t_start: 675
+    t_end: 675            
+    tau_t: 100.0       
+    pressure_gpa: 0        
+    bulk_modulus_gpa: 100.0  
+    tau_p: 1000 
+    total_time_ps: 50.0
   # control debugging plots (can be slow) and intermediate structure dumps
+  optimize: false
   debug: true
   dump_interval: 50000
 
@@ -41,7 +55,7 @@ rnemd:
   timestep_fs: 2
   n_warmup_cycles: 400          # warmup cycles to build gradient before recording data
   n_cycles: 200                  # number of production cycles (velocity swaps after each)
-  steps_per_cycle: 500           # controls the frequency of velocity swaps
+  steps_per_cycle: 2500           # controls the frequency of velocity swaps
   # control replications
   n_runs: 5                # independent rNEMD simulations per structure (for uncertainty)
   # control simulation parameters

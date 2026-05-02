@@ -13,23 +13,37 @@ gb_generation:
   z_nm: 200.0
   timestep_fs: 1.0
   # control replications
-  n_runs: 5
-  # control npt simulation parameters
-  npt:
-    t_start: [10, 1500, 1500, 675]           # K — annealing start temperature
-    t_end: [1500, 1500, 675, 675]            # K — annealing end temperature
-    tau_t: 200.0            # thermostat coupling (in timesteps)
-    pressure_gpa: 0         # target pressure [GPa]
-    bulk_modulus_gpa: 100   # bulk modulus estimate for barostat [GPa]
-    tau_p: 1000             # barostat coupling (in timesteps)
+  n_runs: 3
+  # control initial npt
+  npt_start:
+    t_start: 10
+    t_end: 675
+    tau_t: 100.0
+    pressure_gpa: 0
+    bulk_modulus_gpa: 100
+    tau_p: 1000
+    total_time_ps: 20.0
+  nvt_anneal:
+    t_start: [675, 1500, 1500, 675]
+    t_end: [1500, 1500, 675, 675]
+    tau_t: 100.0
     total_time_ps: [200, 100, 600, 100]
-  # control NVT simulation parameters
+    gb_margin_nm: 8
   nvt:
     t_start: 675
     t_end: 675
-    tau_t: 200
-    total_time_ps: 100.0
+    tau_t: 100.0         
+    total_time_ps: 50.0
+  npt:
+    t_start: 675
+    t_end: 675            
+    tau_t: 100.0       
+    pressure_gpa: 0        
+    bulk_modulus_gpa: 100.0  
+    tau_p: 1000 
+    total_time_ps: 50.0
   # control debugging plots (can be slow) and intermediate structure dumps
+  optimize: false
   debug: true
   dump_interval: 50000
 
@@ -63,12 +77,3 @@ grain_boundaries:
 - axis: [1, 1, 0]
   sigma: 9
   plane: [1, 1, 0]
-- axis: [1, 1, 0]
-  sigma: 27
-  plane: [1, 1, 0]
-- axis: [2, 1, 0]
-  sigma: 27
-  plane: [2, 1, 0]
-- axis: [1, 0, 0]
-  sigma: 29
-  plane: [1, 0, 0]

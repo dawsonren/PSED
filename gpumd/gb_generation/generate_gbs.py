@@ -10,30 +10,32 @@ Pipeline:
 1. Load GB specifications and run parameters from a unified YAML config.
 2. Build GB structure with aimsgb (GrainBoundary + Grain.stack_grains).
    The x/y/z lengths repeated to achieve the correct BOX_SIZE.
-3. Anneal with GPUMD: cooling ramp from npt.t_start to npt.t_end over
-   npt.total_time_ps, using npt_scr thermostat.
-4. Equilibrate with GPUMD: NVT run from nvt.t_start to nvt.t_end over
-   nvt.total_time_ps, using nvt_nhc thermostat.
-5. Repeat steps 3-4 n_runs times with different random initial velocities.
-   All final structures are saved as .traj files.
-6. A summary.csv records energies per run.
+3. npt_start: NPT heating ramp from cold to production temperature.
+4. nvt_anneal: NVT annealing with bulk atoms frozen via GPUMD fix 0;
+               only atoms within ±gb_margin_nm of the GB plane (z = Lz/2) move.
+               Temperature ramps: production → annealing → production.
+               (Skipped for bulk-only entries with sigma = -1.)
+5. nvt: Brief NVT equilibration at production temperature.
+6. npt: Brief NPT equilibration at production temperature.
+7. If optimize=True: FIRE energy minimization to 0 K; records energy_0k_ev
+   and (for GB entries) gamma_0k_j_m2 using the 0K bulk reference.
+8. Repeat steps 3-7 n_runs times with different random initial velocities.
+9. A summary.csv records energies per run.
 
 File outputs:
     results/<config_name>/gb_generation/
       sigma{n}_{miller}_{axis}/
         run_0/
-          npt/                  <- NPT GPUMD working directory (all stages in one run.in)
-            run.in
-            movie.xyz
-            thermo.out
-          nvt/                  <- NVT GPUMD working directory (all stages in one run.in)
-            run.in
-            movie.xyz
-            thermo.out
-          structure.traj        <- final structure after NVT
+          npt_start/           <- NPT heating ramp GPUMD directory
+          nvt_anneal/          <- NVT anneal with frozen bulk (GB entries only)
+          nvt/                 <- brief NVT equilibration
+          npt/                 <- brief NPT equilibration
+          fire/                <- FIRE optimization (if optimize=True)
+          structure.traj       <- final NPT-equilibrated structure
+          structure_0k.traj    <- FIRE-optimized structure (if optimize=True)
         run_1/
           ...
-        summary.csv     <- run_index, energy_ev per row
+        summary.csv  <- run_index, energy_ev, [gamma_j_m2], [energy_0k_ev], [gamma_0k_j_m2]
 """
 
 import os
@@ -97,11 +99,11 @@ USE_CALORINE   = bool(config.get("use_calorine", False))
 RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
 
 gb_cfg = config["gb_generation"]
-# minimum length of supercell in x/y/z axes in angstroms
 BOX_SIZE    = np.array([float(gb_cfg["x_nm"]) * 10, float(gb_cfg["y_nm"]) * 10, float(gb_cfg["z_nm"]) * 10])
 N_RUNS      = int(gb_cfg["n_runs"])
 TIMESTEP_FS = float(gb_cfg["timestep_fs"])
 DEBUG       = bool(gb_cfg.get("debug", False))
+OPTIMIZE    = bool(gb_cfg.get("optimize", False))
 
 def _as_list(v):
     return v if isinstance(v, list) else [v]
@@ -116,33 +118,58 @@ def _make_stages(t_starts, t_ends, times_ps):
             "t_start": ts, "t_end": te, "total_time_ps": tp,
             "n_steps": n,
             "thermo_interval": max(int(n / 100), 1),
-            "dump_interval": _dump_interval_cfg if DEBUG else n - 1,
+            "dump_interval": min(_dump_interval_cfg, n - 1) if DEBUG else n - 1,
         })
     return stages
 
-# NPT parameters
-npt_cfg          = gb_cfg["npt"]
-TAU_T            = float(npt_cfg["tau_t"])
-PRESSURE_GPA     = float(npt_cfg["pressure_gpa"])
-BULK_MODULUS_GPA = float(npt_cfg["bulk_modulus_gpa"])
-TAU_P            = float(npt_cfg["tau_p"])
-NPT_STAGES       = _make_stages(
-    [float(x) for x in _as_list(npt_cfg["t_start"])],
-    [float(x) for x in _as_list(npt_cfg["t_end"])],
-    [float(x) for x in _as_list(npt_cfg["total_time_ps"])],
+# NPT start: heating ramp from cold to production temperature
+npt_start_cfg    = gb_cfg["npt_start"]
+NPT_START_STAGES = _make_stages(
+    [float(x) for x in _as_list(npt_start_cfg["t_start"])],
+    [float(x) for x in _as_list(npt_start_cfg["t_end"])],
+    [float(x) for x in _as_list(npt_start_cfg["total_time_ps"])],
 )
+_NPT_START_PARAMS = {
+    "tau_t":            float(npt_start_cfg["tau_t"]),
+    "pressure_gpa":     float(npt_start_cfg["pressure_gpa"]),
+    "bulk_modulus_gpa": float(npt_start_cfg["bulk_modulus_gpa"]),
+    "tau_p":            float(npt_start_cfg["tau_p"]),
+}
 
-# NVT parameters
-nvt_cfg   = gb_cfg["nvt"]
-NVT_TAU_T = float(nvt_cfg["tau_t"])
+# NVT anneal: bulk atoms frozen (group 0 via fix 0), GB-region atoms mobile (group 1)
+nvt_anneal_cfg    = gb_cfg["nvt_anneal"]
+NVT_ANNEAL_STAGES = _make_stages(
+    [float(x) for x in _as_list(nvt_anneal_cfg["t_start"])],
+    [float(x) for x in _as_list(nvt_anneal_cfg["t_end"])],
+    [float(x) for x in _as_list(nvt_anneal_cfg["total_time_ps"])],
+)
+NVT_ANNEAL_TAU_T = float(nvt_anneal_cfg["tau_t"])
+GB_MARGIN_ANG    = float(nvt_anneal_cfg["gb_margin_nm"]) * 10.0
+
+# Brief NVT equilibration
+nvt_cfg    = gb_cfg["nvt"]
+NVT_TAU_T  = float(nvt_cfg["tau_t"])
 NVT_STAGES = _make_stages(
     [float(x) for x in _as_list(nvt_cfg["t_start"])],
     [float(x) for x in _as_list(nvt_cfg["t_end"])],
     [float(x) for x in _as_list(nvt_cfg["total_time_ps"])],
 )
 
+# Brief NPT equilibration
+npt_cfg    = gb_cfg["npt"]
+NPT_STAGES = _make_stages(
+    [float(x) for x in _as_list(npt_cfg["t_start"])],
+    [float(x) for x in _as_list(npt_cfg["t_end"])],
+    [float(x) for x in _as_list(npt_cfg["total_time_ps"])],
+)
+_NPT_PARAMS = {
+    "tau_t":            float(npt_cfg["tau_t"]),
+    "pressure_gpa":     float(npt_cfg["pressure_gpa"]),
+    "bulk_modulus_gpa": float(npt_cfg["bulk_modulus_gpa"]),
+    "tau_p":            float(npt_cfg["tau_p"]),
+}
+
 _raw_gbs = config["grain_boundaries"]
-# sigma: -1 signals a bulk reference entry; axis/plane are ignored for those.
 GB_LIST = [
     (tuple(entry.get("axis", [])), int(entry["sigma"]), tuple(entry.get("plane", [])))
     for entry in _raw_gbs
@@ -179,8 +206,6 @@ def build_gb_atoms(s_input, axis, sigma, plane):
         perm = [0, 1, 2]
 
     # --- Compute multipliers ---
-    # After permutation: new_x = old[perm[0]], new_y = old[perm[1]], new_z = old[d]
-    # UC controls z (stacking), repeat controls x and y (in-plane)
     UC = max(int(np.ceil(BOX_SIZE[2] / probe_lengths[d])), 1)
     scale_x = max(int(np.ceil(BOX_SIZE[0] / probe_lengths[perm[0]])), 1)
     scale_y = max(int(np.ceil(BOX_SIZE[1] / probe_lengths[perm[1]])), 1)
@@ -206,7 +231,7 @@ def build_gb_atoms(s_input, axis, sigma, plane):
 
     # --- Clean up any tiny off-diagonal elements so it's cubic ---
     cell = atoms.cell[:]
-    np.fill_diagonal(cell, np.diag(cell))  # keep diagonal
+    np.fill_diagonal(cell, np.diag(cell))
     off_diag_mask = ~np.eye(3, dtype=bool)
     cell[off_diag_mask] = 0.0
     atoms.set_cell(cell, scale_atoms=False)
@@ -217,26 +242,45 @@ def build_gb_atoms(s_input, axis, sigma, plane):
     return atoms, (scale_x, scale_y, UC)
 
 
-
-def cool_with_gpumd(atoms, npt_dir, stages):
+def _assign_gb_groups(atoms):
     """
-    Run all NPT npt_scr stages as a single chained GPUMD run.
+    Assign GPUMD group labels for the nvt_anneal freeze step.
 
-    All stages are written into one run.in with a single velocity initialisation
-    at the start. Subsequent ensemble blocks continue from the previous state,
-    avoiding the spurious re-initialisation to 300 K that occurs when each stage
-    is a separate process.
+    Group 0 (frozen via fix 0): bulk atoms farther than GB_MARGIN_ANG from the GB.
+    Group 1 (mobile):           atoms within ±GB_MARGIN_ANG of the GB at z = Lz/2.
 
-    TAU_T (in timesteps) sets the coupling timescale (recommended
-    to be 100 x timestep in GPUMD). Too small causes unphysical velocity kicks;
-    too large and the temperature lags the ramp target.
+    Uses PBC-aware distance so the half-periodic images are treated correctly.
+    """
+    lz = atoms.cell[2, 2]
+    z_gb = lz / 2.0
+    dz = np.abs(atoms.positions[:, 2] - z_gb)
+    dz = np.minimum(dz, lz - dz)  # PBC along z
+    groups = np.where(dz <= GB_MARGIN_ANG, 1, 0).astype(np.int32)
+    n_mobile = int(np.sum(groups == 1))
+    n_frozen = int(np.sum(groups == 0))
+    print(f"    GB groups: {n_mobile} mobile atoms (within {GB_MARGIN_ANG/10:.1f} nm of GB), "
+          f"{n_frozen} frozen bulk atoms")
+    return groups
+
+
+# ---------------------------------------------------------------------------
+# GPUMD runners (calorine path)
+# ---------------------------------------------------------------------------
+
+def cool_with_gpumd(atoms, npt_dir, stages, npt_params):
+    """
+    Run NPT npt_scr stages as a single chained GPUMD run (calorine path).
     """
     os.makedirs(npt_dir, exist_ok=True)
 
-    # Remove stale movie.xyz so calorine reads the correct run's output
     movie_path = os.path.join(npt_dir, "movie.xyz")
     if os.path.exists(movie_path):
         os.remove(movie_path)
+
+    tau_t            = npt_params["tau_t"]
+    pressure_gpa     = npt_params["pressure_gpa"]
+    bulk_modulus_gpa = npt_params["bulk_modulus_gpa"]
+    tau_p            = npt_params["tau_p"]
 
     calc = GPUNEP(
         NEP_MODEL_FILE,
@@ -248,8 +292,6 @@ def cool_with_gpumd(atoms, npt_dir, stages):
     atoms = atoms.copy()
     atoms.calc = calc
 
-    # velocity and time_step appear once; each stage appends its own
-    # ensemble/dump_thermo/dump_position/run block
     md_params = [
         ("velocity",  stages[0]["t_start"]),
         ("time_step", TIMESTEP_FS),
@@ -257,7 +299,7 @@ def cool_with_gpumd(atoms, npt_dir, stages):
     for stage in stages:
         md_params += [
             ("ensemble",     ["npt_scr", stage["t_start"], stage["t_end"],
-                              TAU_T, PRESSURE_GPA, BULK_MODULUS_GPA, TAU_P]),
+                              tau_t, pressure_gpa, bulk_modulus_gpa, tau_p]),
             ("dump_thermo",  stage["thermo_interval"]),
             ("dump_position", stage["dump_interval"]),
             ("run",          stage["n_steps"]),
@@ -267,99 +309,65 @@ def cool_with_gpumd(atoms, npt_dir, stages):
     cooled_atoms.pbc = atoms.pbc
     cooled_atoms.wrap()
 
-    # Read potential energy from the last row of thermo.out (column 2 = U [eV])
     thermo_data = np.loadtxt(os.path.join(npt_dir, "thermo.out"))
-    if thermo_data.ndim == 1:
-        energy_ev = float(thermo_data[2])
-    else:
-        energy_ev = float(thermo_data[-1, 2])
+    energy_ev = float(thermo_data[2] if thermo_data.ndim == 1 else thermo_data[-1, 2])
 
     return cooled_atoms, energy_ev
 
 
-def cool_with_gpumd_direct(atoms, npt_dir, stages):
+def nvt_anneal_with_gpumd(atoms, anneal_dir, stages):
     """
-    Run all NPT npt_scr stages as a single chained GPUMD run (direct executable).
-    Used when the potential is an empirical potential (SW, Tersoff, tersoff_mini, ...)
-    that calorine/GPUNEP does not support.
+    Run NVT nvt_nhc anneal stages with bulk atoms frozen via fix 0 (calorine path).
 
-    All stages are written into one run.in with a single velocity initialisation
-    at the start. Subsequent ensemble blocks continue from the previous state,
-    avoiding the spurious re-initialisation to 300 K that occurs when each stage
-    is a separate process.
-
-    Returns
-    -------
-    cooled_atoms : ase.Atoms
-    energy_ev    : float   potential energy of the final frame [eV]
+    Atoms within GB_MARGIN_ANG of z = Lz/2 are assigned group 1 (mobile).
+    All other atoms are group 0 and frozen by GPUMD's fix 0 each run block.
+    Group labels are written into the model.xyz Properties as group:I:1.
     """
-    os.makedirs(npt_dir, exist_ok=True)
+    os.makedirs(anneal_dir, exist_ok=True)
 
-    # Remove stale output files
-    for fname in ("thermo.out", "movie.xyz"):
-        fpath = os.path.join(npt_dir, fname)
-        if os.path.exists(fpath):
-            os.remove(fpath)
+    movie_path = os.path.join(anneal_dir, "movie.xyz")
+    if os.path.exists(movie_path):
+        os.remove(movie_path)
 
-    if not atoms.has('mass'):
-        atoms.new_array('mass', atoms.get_masses())
+    atoms = atoms.copy()
+    atoms.set_array("group", _assign_gb_groups(atoms))
 
-    # Write structure (velocities will be initialised by the 'velocity' keyword in run.in)
-    write(os.path.join(npt_dir, "model.xyz"), atoms, format="extxyz")
+    calc = GPUNEP(
+        NEP_MODEL_FILE,
+        command=GPUMD_EXEC,
+        gpu_identifier_index=0,
+        directory=anneal_dir,
+        atoms=atoms,
+    )
+    atoms.calc = calc
 
-    rel_potential = os.path.relpath(NEP_MODEL_FILE, npt_dir)
-    # velocity and time_step appear once; each stage appends its own block
-    lines = [
-        f"potential {rel_potential}",
-        f"velocity {stages[0]['t_start']}",
-        f"time_step {TIMESTEP_FS}",
+    md_params = [
+        ("velocity",  stages[0]["t_start"]),
+        ("time_step", TIMESTEP_FS),
     ]
     for stage in stages:
-        lines += [
-            f"ensemble npt_scr {stage['t_start']} {stage['t_end']} "
-            f"{TAU_T} {PRESSURE_GPA} {BULK_MODULUS_GPA} {TAU_P}",
-            f"dump_thermo {stage['thermo_interval']}",
-            f"dump_position {stage['dump_interval']}",
-            f"run {stage['n_steps']}",
+        md_params += [
+            ("fix",          0),   # freeze group-0 (bulk) atoms for this run block
+            ("ensemble",     ["nvt_nhc", stage["t_start"], stage["t_end"], NVT_ANNEAL_TAU_T]),
+            ("dump_thermo",  stage["thermo_interval"]),
+            ("dump_position", stage["dump_interval"]),
+            ("run",          stage["n_steps"]),
         ]
-    with open(os.path.join(npt_dir, "run.in"), "w") as f:
-        f.write("\n".join(lines) + "\n")
 
-    with open(os.path.join(npt_dir, "stdout"), "w") as stdout_f:
-        result = subprocess.run(
-            [GPUMD_EXEC], cwd=npt_dir,
-            stdout=stdout_f, stderr=subprocess.PIPE,
-        )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"GPUMD NPT failed (rc={result.returncode}):\n"
-            + result.stderr.decode()
-        )
+    anneal_atoms = calc.run_custom_md(md_params, return_last_atoms=True)
+    anneal_atoms.pbc = atoms.pbc
+    anneal_atoms.wrap()
+    anneal_atoms.arrays.pop("group", None)  # don't carry group labels into subsequent steps
 
-    # Read final structure from movie.xyz (last frame; cell is preserved in extxyz)
-    cooled_atoms = read(os.path.join(npt_dir, "movie.xyz"), index=-1, format="extxyz")
-    cooled_atoms.pbc = atoms.pbc
-    cooled_atoms.wrap()
+    thermo_data = np.loadtxt(os.path.join(anneal_dir, "thermo.out"))
+    energy_ev = float(thermo_data[2] if thermo_data.ndim == 1 else thermo_data[-1, 2])
 
-    # Read potential energy from the last row of thermo.out (column 2 = U [eV])
-    thermo_data = np.loadtxt(os.path.join(npt_dir, "thermo.out"))
-    if thermo_data.ndim == 1:
-        energy_ev = float(thermo_data[2])
-    else:
-        energy_ev = float(thermo_data[-1, 2])
-
-    return cooled_atoms, energy_ev
+    return anneal_atoms, energy_ev
 
 
-def nvt_with_gpumd(atoms, nvt_dir, stages):
+def nvt_with_gpumd(atoms, nvt_dir, stages, nvt_tau_t):
     """
-    Run all NVT nvt_nhc stages as a single chained GPUMD run.
-
-    All stages are written into one run.in with a single velocity initialisation
-    at the start. Subsequent ensemble blocks continue from the previous state.
-
-    Uses the Nosé-Hoover chain thermostat (nvt_nhc). NVT_TAU_T (in timesteps)
-    sets the coupling timescale; the same guidance as TAU_T applies.
+    Run NVT nvt_nhc stages as a single chained GPUMD run (calorine path).
     """
     os.makedirs(nvt_dir, exist_ok=True)
 
@@ -383,7 +391,7 @@ def nvt_with_gpumd(atoms, nvt_dir, stages):
     ]
     for stage in stages:
         md_params += [
-            ("ensemble",     ["nvt_nhc", stage["t_start"], stage["t_end"], NVT_TAU_T]),
+            ("ensemble",     ["nvt_nhc", stage["t_start"], stage["t_end"], nvt_tau_t]),
             ("dump_thermo",  stage["thermo_interval"]),
             ("dump_position", stage["dump_interval"]),
             ("run",          stage["n_steps"]),
@@ -399,19 +407,133 @@ def nvt_with_gpumd(atoms, nvt_dir, stages):
     return nvt_atoms, energy_ev
 
 
-def nvt_with_gpumd_direct(atoms, nvt_dir, stages):
+# ---------------------------------------------------------------------------
+# GPUMD runners (direct executable path)
+# ---------------------------------------------------------------------------
+
+def cool_with_gpumd_direct(atoms, npt_dir, stages, npt_params):
     """
-    Run all NVT nvt_nhc stages as a single chained GPUMD run (direct executable).
-    Used when the potential is an empirical potential (SW, Tersoff, tersoff_mini, ...)
-    that calorine/GPUNEP does not support.
+    Run NPT npt_scr stages as a single chained GPUMD run (direct executable).
+    """
+    os.makedirs(npt_dir, exist_ok=True)
 
-    All stages are written into one run.in with a single velocity initialisation
-    at the start. Subsequent ensemble blocks continue from the previous state.
+    for fname in ("thermo.out", "movie.xyz"):
+        fpath = os.path.join(npt_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
 
-    Returns
-    -------
-    nvt_atoms : ase.Atoms
-    energy_ev : float   potential energy of the final frame [eV]
+    if not atoms.has("mass"):
+        atoms.new_array("mass", atoms.get_masses())
+
+    write(os.path.join(npt_dir, "model.xyz"), atoms, format="extxyz")
+
+    tau_t            = npt_params["tau_t"]
+    pressure_gpa     = npt_params["pressure_gpa"]
+    bulk_modulus_gpa = npt_params["bulk_modulus_gpa"]
+    tau_p            = npt_params["tau_p"]
+
+    rel_potential = os.path.relpath(NEP_MODEL_FILE, npt_dir)
+    lines = [
+        f"potential {rel_potential}",
+        f"velocity {stages[0]['t_start']}",
+        f"time_step {TIMESTEP_FS}",
+    ]
+    for stage in stages:
+        lines += [
+            f"ensemble npt_scr {stage['t_start']} {stage['t_end']} "
+            f"{tau_t} {pressure_gpa} {bulk_modulus_gpa} {tau_p}",
+            f"dump_thermo {stage['thermo_interval']}",
+            f"dump_position {stage['dump_interval']}",
+            f"run {stage['n_steps']}",
+        ]
+    with open(os.path.join(npt_dir, "run.in"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+    with open(os.path.join(npt_dir, "stdout"), "w") as stdout_f:
+        result = subprocess.run(
+            [GPUMD_EXEC], cwd=npt_dir,
+            stdout=stdout_f, stderr=subprocess.PIPE,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"GPUMD NPT failed (rc={result.returncode}):\n"
+            + result.stderr.decode()
+        )
+
+    cooled_atoms = read(os.path.join(npt_dir, "movie.xyz"), index=-1, format="extxyz")
+    cooled_atoms.pbc = atoms.pbc
+    cooled_atoms.wrap()
+
+    thermo_data = np.loadtxt(os.path.join(npt_dir, "thermo.out"))
+    energy_ev = float(thermo_data[2] if thermo_data.ndim == 1 else thermo_data[-1, 2])
+
+    return cooled_atoms, energy_ev
+
+
+def nvt_anneal_with_gpumd_direct(atoms, anneal_dir, stages):
+    """
+    Run NVT nvt_nhc anneal stages with bulk atoms frozen via fix 0 (direct executable).
+
+    Group labels are written into model.xyz as the 'group' integer property so GPUMD
+    can assign atoms to grouping method 0. fix 0 before each run block freezes group-0
+    (bulk) atoms; group-1 (GB-region) atoms remain mobile.
+    """
+    os.makedirs(anneal_dir, exist_ok=True)
+
+    for fname in ("thermo.out", "movie.xyz"):
+        fpath = os.path.join(anneal_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
+    atoms = atoms.copy()
+    atoms.set_array("group", _assign_gb_groups(atoms))
+
+    if not atoms.has("mass"):
+        atoms.new_array("mass", atoms.get_masses())
+
+    write(os.path.join(anneal_dir, "model.xyz"), atoms, format="extxyz")
+
+    rel_potential = os.path.relpath(NEP_MODEL_FILE, anneal_dir)
+    lines = [
+        f"potential {rel_potential}",
+        f"velocity {stages[0]['t_start']}",
+        f"time_step {TIMESTEP_FS}",
+    ]
+    for stage in stages:
+        lines += [
+            f"fix 0",   # freeze group-0 (bulk) atoms for this run block
+            f"ensemble nvt_nhc {stage['t_start']} {stage['t_end']} {NVT_ANNEAL_TAU_T}",
+            f"dump_thermo {stage['thermo_interval']}",
+            f"dump_position {stage['dump_interval']}",
+            f"run {stage['n_steps']}",
+        ]
+    with open(os.path.join(anneal_dir, "run.in"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+    with open(os.path.join(anneal_dir, "stdout"), "w") as stdout_f:
+        result = subprocess.run(
+            [GPUMD_EXEC], cwd=anneal_dir,
+            stdout=stdout_f, stderr=subprocess.PIPE,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"GPUMD NVT anneal failed (rc={result.returncode}):\n"
+            + result.stderr.decode()
+        )
+
+    anneal_atoms = read(os.path.join(anneal_dir, "movie.xyz"), index=-1, format="extxyz")
+    anneal_atoms.pbc = atoms.pbc
+    anneal_atoms.wrap()
+
+    thermo_data = np.loadtxt(os.path.join(anneal_dir, "thermo.out"))
+    energy_ev = float(thermo_data[2] if thermo_data.ndim == 1 else thermo_data[-1, 2])
+
+    return anneal_atoms, energy_ev
+
+
+def nvt_with_gpumd_direct(atoms, nvt_dir, stages, nvt_tau_t):
+    """
+    Run NVT nvt_nhc stages as a single chained GPUMD run (direct executable).
     """
     os.makedirs(nvt_dir, exist_ok=True)
 
@@ -420,8 +542,8 @@ def nvt_with_gpumd_direct(atoms, nvt_dir, stages):
         if os.path.exists(fpath):
             os.remove(fpath)
 
-    if not atoms.has('mass'):
-        atoms.new_array('mass', atoms.get_masses())
+    if not atoms.has("mass"):
+        atoms.new_array("mass", atoms.get_masses())
 
     write(os.path.join(nvt_dir, "model.xyz"), atoms, format="extxyz")
 
@@ -433,7 +555,7 @@ def nvt_with_gpumd_direct(atoms, nvt_dir, stages):
     ]
     for stage in stages:
         lines += [
-            f"ensemble nvt_nhc {stage['t_start']} {stage['t_end']} {NVT_TAU_T}",
+            f"ensemble nvt_nhc {stage['t_start']} {stage['t_end']} {nvt_tau_t}",
             f"dump_thermo {stage['thermo_interval']}",
             f"dump_position {stage['dump_interval']}",
             f"run {stage['n_steps']}",
@@ -462,6 +584,48 @@ def nvt_with_gpumd_direct(atoms, nvt_dir, stages):
     return nvt_atoms, energy_ev
 
 
+# ---------------------------------------------------------------------------
+# FIRE optimization (0 K)
+# ---------------------------------------------------------------------------
+
+def optimize_with_fire(atoms, opt_dir):
+    """
+    Run FIRE energy minimization to a local 0 K energy minimum using the NEP potential.
+
+    Uses GPUNEP as the ASE calculator backend (requires use_calorine=True).
+    Returns (optimized_atoms, energy_0k_ev).
+    """
+    from ase.optimize import FIRE
+
+    os.makedirs(opt_dir, exist_ok=True)
+
+    atoms = atoms.copy()
+    atoms.arrays.pop("group", None)  # strip group labels from the anneal step
+
+    calc = GPUNEP(
+        NEP_MODEL_FILE,
+        command=GPUMD_EXEC,
+        gpu_identifier_index=0,
+        directory=opt_dir,
+        atoms=atoms,
+    )
+    atoms.calc = calc
+
+    traj_path = os.path.join(opt_dir, "fire.traj")
+    log_path  = os.path.join(opt_dir, "fire.log")
+
+    dyn = FIRE(atoms, trajectory=traj_path, logfile=log_path, maxstep=0.1)
+    dyn.run(fmax=0.05)
+
+    energy_0k = float(atoms.get_potential_energy())
+    print(f"    FIRE converged: E_0K = {energy_0k:.6f} eV  ({dyn.get_number_of_steps()} steps)")
+    return atoms, energy_0k
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic plots
+# ---------------------------------------------------------------------------
+
 def _build_piecewise_target(stages, n_actual_rows):
     """
     Build time_ps and piecewise-linear target_T arrays for a chained thermo.out.
@@ -471,7 +635,6 @@ def _build_piecewise_target(stages, n_actual_rows):
     """
     n_expected = [s["n_steps"] // s["thermo_interval"] for s in stages]
 
-    # Allocate actual rows to stages: last stage absorbs any rounding surplus
     rows_per_stage = []
     remaining = n_actual_rows
     for i, ne in enumerate(n_expected[:-1]):
@@ -496,185 +659,94 @@ def _build_piecewise_target(stages, n_actual_rows):
     return np.concatenate(time_ps_parts), np.concatenate(target_T_parts)
 
 
-def plot_temperature_trace(run_dir, label, run_index, stages):
+_STAGE_COLORS = {
+    "npt_start":  "cornflowerblue",
+    "nvt_anneal": "gold",
+    "nvt":        "mediumseagreen",
+    "npt":        "tomato",
+}
+
+
+def plot_run_diagnostics(run_dir, out_dir, label, run_index, no_gb):
     """
-    Plot actual vs target temperature from thermo.out to validate TAU_T.
+    Single combined diagnostic plot: temperature and mean pressure across all MD stages.
 
-    Handles a chained run.in with multiple stages: the target temperature is
-    piecewise linear, with one segment per stage. Vertical dashed lines mark
-    stage boundaries.
-
-    What to look for:
-      - GOOD: actual temperature tracks the ramp smoothly with small fluctuations
-      - BAD (TAU_T too small): rapid high-frequency oscillations around the target —
-        the thermostat is overcorrecting every few steps, artificially disrupting dynamics
-      - BAD (TAU_T too large): actual temperature lags far behind the ramp target —
-        the thermostat barely intervenes and the system drifts freely
+    Reads thermo.out from npt_start/, nvt_anneal/ (GB only), nvt/, and npt/,
+    stitches them into a continuous time axis, and saves the figure to
+    out_dir/run_{run_index}_diagnostics.png (next to summary.csv).
 
     thermo.out columns (GPUMD format):
         T  K  U  Pxx Pyy Pzz Pyz Pxz Pxy  ax ay az  bx by bz  cx cy cz
-    Only the first column (T) is needed here.
     """
-    thermo_path = os.path.join(run_dir, "thermo.out")
-    if not os.path.exists(thermo_path):
-        print(f"    Warning: thermo.out not found in {run_dir}, skipping T plot.")
+    stages_info = [
+        (os.path.join(run_dir, "npt_start"), NPT_START_STAGES, "npt_start"),
+    ]
+    if not no_gb:
+        stages_info.append(
+            (os.path.join(run_dir, "nvt_anneal"), NVT_ANNEAL_STAGES, "nvt_anneal")
+        )
+    stages_info += [
+        (os.path.join(run_dir, "nvt"), NVT_STAGES, "nvt"),
+        (os.path.join(run_dir, "npt"), NPT_STAGES, "npt"),
+    ]
+
+    all_time, all_T, all_P = [], [], []
+    stage_spans = []  # (t_start, t_end, name) for background shading
+    cumulative = 0.0
+
+    for stage_dir, stages, stage_name in stages_info:
+        stage_duration = sum(s["total_time_ps"] for s in stages)
+        path = os.path.join(stage_dir, "thermo.out")
+        if not os.path.exists(path):
+            print(f"    Warning: thermo.out not found in {stage_dir}; skipping in diagnostics.")
+            cumulative += stage_duration
+            continue
+        data = np.loadtxt(path)
+        if data.ndim == 1:
+            data = data[np.newaxis, :]
+        T = data[:, 0]
+        P = (data[:, 3] + data[:, 4] + data[:, 5]) / 3.0
+        time_ps, _ = _build_piecewise_target(stages, len(data))
+        stage_spans.append((cumulative, cumulative + stage_duration, stage_name))
+        all_time.append(time_ps + cumulative)
+        all_T.append(T)
+        all_P.append(P)
+        cumulative += stage_duration
+
+    if not all_time:
+        print(f"    Warning: no thermo data found for run {run_index}; skipping diagnostics.")
         return
 
-    import pandas as pd
-    thermo = pd.read_csv(
-        thermo_path,
-        sep=r"\s+",
-        header=None,
-        names=["T", "K", "U", "Pxx", "Pyy", "Pzz", "Pyz", "Pxz", "Pxy",
-               "ax", "ay", "az", "bx", "by", "bz", "cx", "cy", "cz"],
-    )
+    time  = np.concatenate(all_time)
+    T_arr = np.concatenate(all_T)
+    P_arr = np.concatenate(all_P)
 
-    time_ps, target_T = _build_piecewise_target(stages, len(thermo))
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+    fig.suptitle(f"{label} — run {run_index} diagnostics", fontsize=11)
 
-    total_time = sum(s["total_time_ps"] for s in stages)
-    stage_summary = " → ".join(f"{s['t_start']}K" for s in stages) + f" → {stages[-1]['t_end']}K"
+    for t0, t1, name in stage_spans:
+        color = _STAGE_COLORS.get(name, "lightgray")
+        for ax in axes:
+            ax.axvspan(t0, t1, alpha=0.15, color=color, label=name)
 
-    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-    plt.suptitle(
-        f"{label} — run {run_index} NPT temperature trace\n"
-        f"{stage_summary} over {total_time:.0f} ps  |  "
-        f"TAU_T={TAU_T:.0f} steps ({TAU_T * TIMESTEP_FS / 1000:.1f} ps coupling)",
-        fontsize=10,
-    )
-
-    # Top panel: actual vs target temperature
-    axes[0].plot(time_ps, thermo["T"], color="tomato", linewidth=0.8, label="Actual T")
-    axes[0].plot(time_ps, target_T, color="steelblue", linewidth=1.5,
-                 linestyle="--", label="Target ramp")
+    axes[0].plot(time, T_arr, color="black", linewidth=0.8)
     axes[0].set_ylabel("Temperature [K]")
-    axes[0].legend(fontsize=8)
-    axes[0].set_title("Actual vs target — should track smoothly with no large oscillations or lag",
-                      fontsize=8)
 
-    # Bottom panel: residual (actual - target) — makes coupling quality obvious
-    residual = thermo["T"].values - target_T
-    axes[1].plot(time_ps, residual, color="darkorange", linewidth=0.8)
-    axes[1].axhline(0, color="black", linewidth=0.5, linestyle="--")
-    axes[1].set_ylabel("T_actual - T_target [K]")
+    axes[1].plot(time, P_arr, color="black", linewidth=0.8)
+    axes[1].axhline(0, color="gray", linewidth=0.5, linestyle="--")
+    axes[1].set_ylabel("Mean pressure [GPa]")
     axes[1].set_xlabel("Time [ps]")
-    axes[1].set_title(
-        "Residual — oscillations → TAU_T too small; persistent drift → TAU_T too large",
-        fontsize=8,
-    )
 
-    # Mark stage boundaries with vertical lines
-    boundary_time = 0.0
-    for stage in stages[:-1]:
-        boundary_time += stage["total_time_ps"]
-        for ax in axes:
-            ax.axvline(boundary_time, color="gray", linewidth=0.8, linestyle=":")
+    # Stage legend from the shaded regions (deduplicated)
+    handles, lbls = axes[0].get_legend_handles_labels()
+    by_label = dict(zip(lbls, handles))
+    axes[0].legend(by_label.values(), by_label.keys(), fontsize=8, loc="upper right")
 
     plt.tight_layout()
-    out_path = os.path.join(run_dir, "temperature_trace.png")
-    plt.savefig(out_path)
+    out_path = os.path.join(out_dir, f"run_{run_index}_diagnostics.png")
+    plt.savefig(out_path, dpi=150)
     plt.close()
-    print(f"    Temperature trace saved to {out_path}")
-
-    # Print a quick numeric summary so you can assess without opening the plot
-    rms_residual = np.sqrt(np.mean(residual**2))
-    max_residual = np.max(np.abs(residual))
-    print(f"    TAU_T validation: RMS residual={rms_residual:.1f} K, "
-          f"max |residual|={max_residual:.1f} K "
-          f"(RMS < ~50 K is generally acceptable for annealing)")
-
-def plot_nvt_diagnostics(nvt_dir, label, run_index, stages):
-    """
-    Diagnostic plots for the NVT nvt_nhc equilibration step.
-
-    Handles a chained run.in with multiple stages: the target temperature is
-    piecewise linear and stage boundaries are marked with vertical lines.
-
-    Three panels:
-      1. Temperature trace: actual T vs target — validates thermostat coupling.
-         Oscillations → NVT_TAU_T too small; persistent drift → NVT_TAU_T too large.
-      2. Potential energy U: should plateau after equilibration.
-         A downward drift means the system is still relaxing; increase NVT_TOTAL_TIME_PS.
-      3. Pressure components Pxx/Pyy/Pzz and mean pressure:
-         Large anisotropy or a large non-zero mean suggests residual stress in the GB.
-
-    thermo.out columns (GPUMD format, triclinic):
-        T  K  U  Pxx Pyy Pzz Pyz Pxz Pxy  ax ay az  bx by bz  cx cy cz
-    """
-    thermo_path = os.path.join(nvt_dir, "thermo.out")
-    if not os.path.exists(thermo_path):
-        print(f"    Warning: thermo.out not found in {nvt_dir}, skipping NVT diagnostics.")
-        return
-
-    import pandas as pd
-    thermo = pd.read_csv(
-        thermo_path,
-        sep=r"\s+",
-        header=None,
-        names=["T", "K", "U", "Pxx", "Pyy", "Pzz", "Pyz", "Pxz", "Pxy",
-               "ax", "ay", "az", "bx", "by", "bz", "cx", "cy", "cz"],
-    )
-
-    time_ps, target_T = _build_piecewise_target(stages, len(thermo))
-
-    total_time = sum(s["total_time_ps"] for s in stages)
-    stage_summary = " → ".join(f"{s['t_start']}K" for s in stages) + f" → {stages[-1]['t_end']}K"
-
-    fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
-    plt.suptitle(
-        f"{label} — run {run_index} NVT diagnostics\n"
-        f"nvt_nhc: {stage_summary} over {total_time:.0f} ps  |  "
-        f"NVT_TAU_T={NVT_TAU_T:.0f} steps ({NVT_TAU_T * TIMESTEP_FS / 1000:.1f} ps coupling)",
-        fontsize=10,
-    )
-
-    # Panel 1: Temperature trace
-    axes[0].plot(time_ps, thermo["T"], color="tomato", linewidth=0.8, label="Actual T")
-    axes[0].plot(time_ps, target_T, color="steelblue", linewidth=1.5,
-                 linestyle="--", label="Target T")
-    axes[0].set_ylabel("Temperature [K]")
-    axes[0].legend(fontsize=8)
-    axes[0].set_title(
-        "Oscillations → NVT_TAU_T too small; persistent drift → NVT_TAU_T too large",
-        fontsize=8,
-    )
-
-    # Panel 2: Potential energy
-    axes[1].plot(time_ps, thermo["U"], color="mediumseagreen", linewidth=0.8)
-    axes[1].set_ylabel("Potential energy [eV]")
-    axes[1].set_title("Should plateau; downward drift → increase NVT_TOTAL_TIME_PS", fontsize=8)
-
-    # Panel 3: Pressure components
-    mean_p = (thermo["Pxx"] + thermo["Pyy"] + thermo["Pzz"]) / 3.0
-    axes[2].plot(time_ps, thermo["Pxx"], color="lightcoral",      linewidth=0.6, alpha=0.7, label="Pxx")
-    axes[2].plot(time_ps, thermo["Pyy"], color="cornflowerblue",  linewidth=0.6, alpha=0.7, label="Pyy")
-    axes[2].plot(time_ps, thermo["Pzz"], color="mediumorchid",    linewidth=0.6, alpha=0.7, label="Pzz")
-    axes[2].plot(time_ps, mean_p,        color="black",           linewidth=1.2,             label="Mean P")
-    axes[2].axhline(0, color="gray", linewidth=0.5, linestyle="--")
-    axes[2].set_ylabel("Pressure [GPa]")
-    axes[2].set_xlabel("Time [ps]")
-    axes[2].legend(fontsize=7)
-    axes[2].set_title("Large anisotropy or non-zero mean → residual GB stress", fontsize=8)
-
-    # Mark stage boundaries with vertical lines
-    boundary_time = 0.0
-    for stage in stages[:-1]:
-        boundary_time += stage["total_time_ps"]
-        for ax in axes:
-            ax.axvline(boundary_time, color="gray", linewidth=0.8, linestyle=":")
-
-    plt.tight_layout()
-    out_path = os.path.join(nvt_dir, "nvt_diagnostics.png")
-    plt.savefig(out_path)
-    plt.close()
-    print(f"    NVT diagnostics saved to {out_path}")
-
-    # Quick numeric summary
-    mean_T    = thermo["T"].mean()
-    std_T     = thermo["T"].std()
-    drift_U   = float(thermo["U"].iloc[-1] - thermo["U"].iloc[0])
-    mean_p_val = mean_p.mean()
-    print(f"    NVT summary: mean T={mean_T:.1f} K (±{std_T:.1f} K), "
-          f"ΔU={drift_U:.3f} eV, mean P={mean_p_val:.3f} GPa")
+    print(f"    Diagnostics saved to {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -685,21 +757,16 @@ BULK_SI_LABEL = "bulk_si"
 
 
 def build_bulk_atoms(s_input):
-    """
-    Build a bulk Si supercell by repeating the unit cell to get to
-    the minimum BOX_SIZE.
-    """
     atoms = s_input.to_ase_atoms()
-    lengths = atoms.cell.lengths()  # ~[5.431, 5.431, 5.431] for conventional Si
+    lengths = atoms.cell.lengths()
     nx = max(int(np.ceil(BOX_SIZE[0] / lengths[0])), 1)
     ny = max(int(np.ceil(BOX_SIZE[1] / lengths[1])), 1)
     nz = max(int(np.ceil(BOX_SIZE[2] / lengths[2])), 1)
     scaling = (nx, ny, nz)
     atoms = atoms.repeat((nx, ny, nz))
 
-    # --- Clean up any tiny off-diagonal elements so it's cubic ---
     cell = atoms.cell[:]
-    np.fill_diagonal(cell, np.diag(cell))  # keep diagonal
+    np.fill_diagonal(cell, np.diag(cell))
     off_diag_mask = ~np.eye(3, dtype=bool)
     cell[off_diag_mask] = 0.0
     atoms.set_cell(cell, scale_atoms=False)
@@ -710,6 +777,27 @@ def build_bulk_atoms(s_input):
     return atoms, scaling
 
 
+def _bulk_energy_0k_per_atom(bulk_results_dir):
+    """
+    Mean 0K bulk energy per atom from FIRE-optimized bulk runs.
+
+    Reads energy_0k_ev from structure.traj info dicts; returns None if no 0K
+    energies were recorded (i.e., optimize=False was used for the bulk run).
+    """
+    bulk_dir = Path(bulk_results_dir)
+    run_trajs = sorted(bulk_dir.glob("run_*/structure.traj"))
+    if not run_trajs:
+        return None
+    e_per_atom = []
+    for traj in run_trajs:
+        atoms = read(str(traj))
+        if "energy_0k_ev" in atoms.info:
+            e_per_atom.append(atoms.info["energy_0k_ev"] / len(atoms))
+    if not e_per_atom:
+        return None
+    return float(np.mean(e_per_atom))
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -717,8 +805,8 @@ def build_bulk_atoms(s_input):
 _EV_ANG2_TO_J_M2 = 16.0218
 
 
-def process_gb(axis, sigma, plane, s_input, start_run=0, e_bulk_per_atom=None):
-    # sigma == -1 signals a bulk-only run (no grain boundary)
+def process_gb(axis, sigma, plane, s_input, start_run=0,
+               e_bulk_per_atom=None, e_bulk_0k_per_atom=None):
     no_gb = (sigma == -1)
 
     if no_gb:
@@ -744,35 +832,49 @@ def process_gb(axis, sigma, plane, s_input, start_run=0, e_bulk_per_atom=None):
     if start_run > 0:
         print(f"  Resuming from run {start_run} ({start_run}/{N_RUNS} already done)")
     print(f"  n_runs={N_RUNS - start_run} remaining")
-    npt_profile = " → ".join(f"{s['t_start']}K" for s in NPT_STAGES) + f" → {NPT_STAGES[-1]['t_end']}K"
-    nvt_profile = " → ".join(f"{s['t_start']}K" for s in NVT_STAGES) + f" → {NVT_STAGES[-1]['t_end']}K"
-    print(f"  NPT: {npt_profile} over {sum(s['total_time_ps'] for s in NPT_STAGES):.0f} ps (chained)")
-    print(f"  NVT: {nvt_profile} over {sum(s['total_time_ps'] for s in NVT_STAGES):.0f} ps (chained)")
+
+    npt_start_profile = (" → ".join(f"{s['t_start']}K" for s in NPT_START_STAGES)
+                         + f" → {NPT_START_STAGES[-1]['t_end']}K")
+    anneal_profile    = (" → ".join(f"{s['t_start']}K" for s in NVT_ANNEAL_STAGES)
+                         + f" → {NVT_ANNEAL_STAGES[-1]['t_end']}K")
+    nvt_profile       = (" → ".join(f"{s['t_start']}K" for s in NVT_STAGES)
+                         + f" → {NVT_STAGES[-1]['t_end']}K")
+    npt_profile       = (" → ".join(f"{s['t_start']}K" for s in NPT_STAGES)
+                         + f" → {NPT_STAGES[-1]['t_end']}K")
+
+    print(f"  npt_start : {npt_start_profile} over "
+          f"{sum(s['total_time_ps'] for s in NPT_START_STAGES):.0f} ps")
+    if not no_gb:
+        print(f"  nvt_anneal: {anneal_profile} over "
+              f"{sum(s['total_time_ps'] for s in NVT_ANNEAL_STAGES):.0f} ps  (fix 0 on bulk atoms)")
+    print(f"  nvt       : {nvt_profile} over "
+          f"{sum(s['total_time_ps'] for s in NVT_STAGES):.0f} ps")
+    print(f"  npt       : {npt_profile} over "
+          f"{sum(s['total_time_ps'] for s in NPT_STAGES):.0f} ps")
+    if OPTIMIZE:
+        print(f"  fire      : FIRE fmax=0.05 eV/Å → 0 K energy")
     print(f"{'='*60}")
 
-    # Build initial structure
     if no_gb:
         gb_atoms, scaling = build_bulk_atoms(s_input)
-        print(f"  Built bulk Si: {len(gb_atoms)} atoms after {scaling[0]}x{scaling[1]}x{scaling[2]} (XxYxZ) repeat\n"
+        print(f"  Built bulk Si: {len(gb_atoms)} atoms after "
+              f"{scaling[0]}x{scaling[1]}x{scaling[2]} (XxYxZ) repeat\n"
               f"  (cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)\n"
               f"  (goal: {BOX_SIZE[0]} x {BOX_SIZE[1]} x {BOX_SIZE[2]} Å)")
     else:
-        # Build initial GB structure and repeat along X/Y for cross-section convergence.
-        # This must happen before annealing so GPUMD sees a thick enough cell in all
-        # periodic directions (NEP requires thickness >= 2 * cutoff = 10 Å).
         gb_atoms, scaling = build_gb_atoms(s_input, axis, sigma, plane)
         gb_atoms.wrap()
-        print(f"  Built GB: {len(gb_atoms)} atoms after {scaling[0]}x{scaling[1]}x{scaling[2]} (XxYxZ) repeat\n"
+        print(f"  Built GB: {len(gb_atoms)} atoms after "
+              f"{scaling[0]}x{scaling[1]}x{scaling[2]} (XxYxZ) repeat\n"
               f"  (cell: {gb_atoms.cell[0,0]:.1f} x {gb_atoms.cell[1,1]:.1f} x {gb_atoms.cell[2,2]:.1f} Å)\n"
               f"  (goal: {BOX_SIZE[0]} x {BOX_SIZE[1]} x {BOX_SIZE[2]} Å)")
 
     if DEBUG:
-        # Save initial structure for reference
         write(os.path.join(out_dir, "initial.traj"), gb_atoms)
 
-    write_gamma = not no_gb and e_bulk_per_atom is not None
+    write_gamma    = not no_gb and e_bulk_per_atom is not None
+    write_gamma_0k = OPTIMIZE and not no_gb and e_bulk_0k_per_atom is not None
 
-    # Open summary CSV (write fresh if starting from scratch, append if resuming)
     open_mode = "a" if start_run > 0 else "w"
     with open(summary_file, open_mode, newline="") as csvf:
         writer = csv.writer(csvf)
@@ -780,58 +882,118 @@ def process_gb(axis, sigma, plane, s_input, start_run=0, e_bulk_per_atom=None):
             header = ["run_index", "energy_ev"]
             if write_gamma:
                 header.append("gamma_j_m2")
+            if OPTIMIZE:
+                header.append("energy_0k_ev")
+            if write_gamma_0k:
+                header.append("gamma_0k_j_m2")
             writer.writerow(header)
 
         for i in range(start_run, N_RUNS):
             print(f"\n  Run {i+1}/{N_RUNS}...")
 
-            run_dir = os.path.join(out_dir, f"run_{i}")
-            npt_dir = os.path.join(run_dir, "npt")
-            nvt_dir = os.path.join(run_dir, "nvt")
-            start_atoms = gb_atoms.copy()
+            run_dir       = os.path.join(out_dir, f"run_{i}")
+            npt_start_dir = os.path.join(run_dir, "npt_start")
+            anneal_dir    = os.path.join(run_dir, "nvt_anneal")
+            nvt_dir       = os.path.join(run_dir, "nvt")
+            npt_dir       = os.path.join(run_dir, "npt")
+            fire_dir      = os.path.join(run_dir, "fire")
+            start_atoms   = gb_atoms.copy()
 
-            # NPT: all stages chained into a single GPUMD run
+            # Step 1: NPT heating ramp from cold to production temperature
             if USE_CALORINE:
-                cooled_atoms, npt_energy = cool_with_gpumd(start_atoms, npt_dir, NPT_STAGES)
+                warm_atoms, npt_start_energy = cool_with_gpumd(
+                    start_atoms, npt_start_dir, NPT_START_STAGES, _NPT_START_PARAMS)
             else:
-                cooled_atoms, npt_energy = cool_with_gpumd_direct(start_atoms, npt_dir, NPT_STAGES)
-            print(f"    NPT done ({npt_profile} over {sum(s['total_time_ps'] for s in NPT_STAGES):.0f} ps). Energy = {npt_energy:.6f} eV")
-            if DEBUG:
-                plot_temperature_trace(npt_dir, label, i, NPT_STAGES)
+                warm_atoms, npt_start_energy = cool_with_gpumd_direct(
+                    start_atoms, npt_start_dir, NPT_START_STAGES, _NPT_START_PARAMS)
+            print(f"    npt_start done ({npt_start_profile} over "
+                  f"{sum(s['total_time_ps'] for s in NPT_START_STAGES):.0f} ps). "
+                  f"Energy = {npt_start_energy:.6f} eV")
 
-            # NVT: all stages chained into a single GPUMD run
-            if USE_CALORINE:
-                nvt_atoms, energy = nvt_with_gpumd(cooled_atoms, nvt_dir, NVT_STAGES)
-            else:
-                nvt_atoms, energy = nvt_with_gpumd_direct(cooled_atoms, nvt_dir, NVT_STAGES)
-            print(f"    NVT done ({nvt_profile} over {sum(s['total_time_ps'] for s in NVT_STAGES):.0f} ps). Energy = {energy:.6f} eV")
-            if DEBUG:
-                plot_nvt_diagnostics(nvt_dir, label, i, NVT_STAGES)
-
-            # Attach metadata to atoms.info so downstream scripts can read it back
+            # Step 2: NVT anneal with frozen bulk (GB entries only)
             if not no_gb:
-                nvt_atoms.info["axis"]   = list(axis)
-                nvt_atoms.info["sigma"]  = sigma
-                nvt_atoms.info["plane"] = list(plane)
-            nvt_atoms.info["run_index"]  = i
-            nvt_atoms.info["energy_ev"]  = energy
-            nvt_atoms.info["gb_label"]   = label
+                if USE_CALORINE:
+                    anneal_atoms, anneal_energy = nvt_anneal_with_gpumd(
+                        warm_atoms, anneal_dir, NVT_ANNEAL_STAGES)
+                else:
+                    anneal_atoms, anneal_energy = nvt_anneal_with_gpumd_direct(
+                        warm_atoms, anneal_dir, NVT_ANNEAL_STAGES)
+                print(f"    nvt_anneal done ({anneal_profile} over "
+                      f"{sum(s['total_time_ps'] for s in NVT_ANNEAL_STAGES):.0f} ps). "
+                      f"Energy = {anneal_energy:.6f} eV")
+            else:
+                anneal_atoms = warm_atoms
+
+            # Step 3: Brief NVT equilibration (all atoms free)
+            if USE_CALORINE:
+                nvt_atoms, nvt_energy = nvt_with_gpumd(
+                    anneal_atoms, nvt_dir, NVT_STAGES, NVT_TAU_T)
+            else:
+                nvt_atoms, nvt_energy = nvt_with_gpumd_direct(
+                    anneal_atoms, nvt_dir, NVT_STAGES, NVT_TAU_T)
+            print(f"    nvt done ({nvt_profile} over "
+                  f"{sum(s['total_time_ps'] for s in NVT_STAGES):.0f} ps). "
+                  f"Energy = {nvt_energy:.6f} eV")
+
+            # Step 4: Brief NPT equilibration
+            if USE_CALORINE:
+                final_atoms, energy = cool_with_gpumd(
+                    nvt_atoms, npt_dir, NPT_STAGES, _NPT_PARAMS)
+            else:
+                final_atoms, energy = cool_with_gpumd_direct(
+                    nvt_atoms, npt_dir, NPT_STAGES, _NPT_PARAMS)
+            print(f"    npt done ({npt_profile} over "
+                  f"{sum(s['total_time_ps'] for s in NPT_STAGES):.0f} ps). "
+                  f"Energy = {energy:.6f} eV")
+
+            # Step 5: FIRE optimization to 0 K (optional)
+            energy_0k = None
+            if OPTIMIZE:
+                if not USE_CALORINE:
+                    print("    Warning: FIRE optimization requires use_calorine=True; skipping.")
+                else:
+                    opt_atoms, energy_0k = optimize_with_fire(final_atoms, fire_dir)
+                    final_atoms.info["energy_0k_ev"] = energy_0k
+                    write(os.path.join(run_dir, "structure_0k.traj"), opt_atoms)
+
+            # Attach metadata
+            if not no_gb:
+                final_atoms.info["axis"]   = list(axis)
+                final_atoms.info["sigma"]  = sigma
+                final_atoms.info["plane"]  = list(plane)
+            final_atoms.info["run_index"] = i
+            final_atoms.info["energy_ev"] = energy
+            final_atoms.info["gb_label"]  = label
 
             row = [i, energy]
-            if write_gamma:
-                cell = nvt_atoms.cell[:]
-                area = np.linalg.norm(cell[0]) * np.linalg.norm(cell[1])
-                gamma_ev = (energy - len(nvt_atoms) * e_bulk_per_atom) / (2.0 * area)
-                gamma_jm2 = gamma_ev * _EV_ANG2_TO_J_M2
-                nvt_atoms.info["gamma_j_m2"] = gamma_jm2
-                row.append(gamma_jm2)
-                print(f"    GB energy: {gamma_jm2:.4f} J/m²")
 
-            # Write structure to per-run traj file
-            write(os.path.join(run_dir, "structure.traj"), nvt_atoms)
+            if write_gamma:
+                cell    = final_atoms.cell[:]
+                area    = np.linalg.norm(cell[0]) * np.linalg.norm(cell[1])
+                gamma_ev  = (energy - len(final_atoms) * e_bulk_per_atom) / (2.0 * area)
+                gamma_jm2 = gamma_ev * _EV_ANG2_TO_J_M2
+                final_atoms.info["gamma_j_m2"] = gamma_jm2
+                row.append(gamma_jm2)
+                print(f"    GB energy (thermal): {gamma_jm2:.4f} J/m²")
+
+            if OPTIMIZE:
+                row.append(energy_0k if energy_0k is not None else "")
+
+            if write_gamma_0k and energy_0k is not None:
+                cell         = final_atoms.cell[:]
+                area         = np.linalg.norm(cell[0]) * np.linalg.norm(cell[1])
+                gamma_0k_ev  = (energy_0k - len(final_atoms) * e_bulk_0k_per_atom) / (2.0 * area)
+                gamma_0k_jm2 = gamma_0k_ev * _EV_ANG2_TO_J_M2
+                final_atoms.info["gamma_0k_j_m2"] = gamma_0k_jm2
+                row.append(gamma_0k_jm2)
+                print(f"    GB energy (0 K):     {gamma_0k_jm2:.4f} J/m²")
+
+            write(os.path.join(run_dir, "structure.traj"), final_atoms)
             writer.writerow(row)
 
-    # Print energy summary across runs
+            if DEBUG:
+                plot_run_diagnostics(run_dir, out_dir, label, i, no_gb)
+
     all_structures = [
         read(os.path.join(out_dir, f"run_{i}", "structure.traj"))
         for i in range(N_RUNS)
@@ -862,7 +1024,6 @@ def main():
     print(f"Fetching Si structure from Materials Project (mp-149)...")
     s_input = Grain.from_mp_id("mp-149")
 
-    # Bulk entries first so e_bulk is available when GB entries run.
     bulk_entries = [(ax, sg, pl) for (ax, sg, pl) in GB_LIST if sg == -1]
     gb_entries   = [(ax, sg, pl) for (ax, sg, pl) in GB_LIST if sg != -1]
 
@@ -881,19 +1042,28 @@ def main():
         finally:
             release_claim(claim_path)
 
-    # Load bulk reference (None if no bulk entry was specified)
+    # Load thermal bulk reference
     bulk_dir = os.path.join(RESULTS_DIR, BULK_SI_LABEL)
     e_bulk = None
     if os.path.isdir(bulk_dir):
         try:
             e_bulk, _ = bulk_energy_per_atom(bulk_dir)
-            print(f"\nBulk reference: {e_bulk:.6f} eV/atom — will compute GB energies.")
+            print(f"\nBulk reference (thermal): {e_bulk:.6f} eV/atom")
         except FileNotFoundError:
             print("\nWarning: bulk_si results not found; summary.csv will omit gamma_j_m2.")
 
+    # Load 0K bulk reference (only available if bulk was run with optimize=True)
+    e_bulk_0k = None
+    if OPTIMIZE and os.path.isdir(bulk_dir):
+        e_bulk_0k = _bulk_energy_0k_per_atom(bulk_dir)
+        if e_bulk_0k is not None:
+            print(f"Bulk reference (0 K):     {e_bulk_0k:.6f} eV/atom")
+        else:
+            print("Warning: no 0K bulk energies found; gamma_0k_j_m2 will be omitted from summary.")
+
     for (axis, sigma, plane) in gb_entries:
         label = gb_label(axis, sigma, plane)
-        info = gb_status.get(label, {"status": "not_started", "runs_remaining": N_RUNS})
+        info  = gb_status.get(label, {"status": "not_started", "runs_remaining": N_RUNS})
         if info["status"] == "completed":
             print(f"\nSkipping {label}: already completed.")
             continue
@@ -903,7 +1073,8 @@ def main():
             continue
         try:
             start_run = N_RUNS - info["runs_remaining"]
-            process_gb(axis, sigma, plane, s_input, start_run=start_run, e_bulk_per_atom=e_bulk)
+            process_gb(axis, sigma, plane, s_input, start_run=start_run,
+                       e_bulk_per_atom=e_bulk, e_bulk_0k_per_atom=e_bulk_0k)
         finally:
             release_claim(claim_path)
 
