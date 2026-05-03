@@ -13,7 +13,7 @@ gb_generation:
   z_nm: 200.0
   timestep_fs: 1.0
   # control replications
-  n_runs: 3
+  n_runs: 5
   # control initial npt
   npt_start:
     t_start: 10
@@ -73,7 +73,19 @@ grain_boundaries:
 - sigma: -1
 - axis: [1, 1, 0]
   sigma: 3
+  plane: [-1, 1, 1]
+- axis: [1, 1, 0]
+  sigma: 3
   plane: [1, 1, 0]
 - axis: [1, 1, 0]
   sigma: 9
+  plane: [-2, 2, 1]
+- axis: [1, 1, 0]
+  sigma: 9
+  plane: [1, 1, 0]
+- axis: [1, 1, 0]
+  sigma: 27
+  plane: [-5, 5, 2]
+- axis: [1, 1, 0]
+  sigma: 27
   plane: [1, 1, 0]

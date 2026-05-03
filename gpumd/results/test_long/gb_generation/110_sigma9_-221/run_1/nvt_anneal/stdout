@@ -1,0 +1,188 @@
+
+***************************************************************
+*                 Welcome to use GPUMD                        *
+*     (Graphics Processing Units Molecular Dynamics)          *
+*                     version 4.8                             *
+*              This is the gpumd executable                   *
+***************************************************************
+
+
+---------------------------------------------------------------
+Compiling options:
+---------------------------------------------------------------
+
+DEBUG is off: Use different PRNG seeds for different runs.
+
+---------------------------------------------------------------
+GPU information:
+---------------------------------------------------------------
+
+number of GPUs = 1
+Device id:                   0
+    Device name:             NVIDIA A100-SXM4-80GB
+    Compute capability:      8.0
+    Amount of global memory: 79.2517 GB
+    Number of SMs:           108
+
+---------------------------------------------------------------
+Started running GPUMD.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Started initializing positions and related parameters.
+---------------------------------------------------------------
+
+Number of atoms is 283392.
+Use periodic boundary conditions along x.
+Use periodic boundary conditions along y.
+Use periodic boundary conditions along z.
+Box matrix h = [a, b, c] is
+    4.6305399000e+01    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.0870266000e+01    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    4.0273719000e+03
+Inverse box matrix g = inv(h) is
+    2.1595753877e-02    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.2393630816e-02    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    2.4830088326e-04
+Do not specify initial velocities here.
+Have 1 grouping method(s).
+There are 2 groups of atoms in grouping method 0.
+    272524 atoms in group 0.
+    10868 atoms in group 1.
+There is only one atom type.
+    283392 atoms of type 0.
+Initialized velocities with default T = 300 K.
+
+---------------------------------------------------------------
+Finished initializing positions and related parameters.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Started executing the commands in run.in.
+---------------------------------------------------------------
+
+Use Tersoff-mini (1-element) potential with element(s):
+ Si
+Initialized velocities with input T = 675 K.
+Time step for this run is 1 fs.
+Group 0 in grouping method 0 will be fixed.
+Use NVT ensemble for this run.
+    choose the Nose-Hoover chain method.
+    initial temperature is 675 K.
+    final temperature is 1500 K.
+    tau_T is 100 time_step.
+Dump thermo every 2000 steps.
+Dump position.
+    every 50000 steps.
+Run 200000 steps.
+    20000 steps completed.
+    40000 steps completed.
+    60000 steps completed.
+    80000 steps completed.
+    100000 steps completed.
+    120000 steps completed.
+    140000 steps completed.
+    160000 steps completed.
+    180000 steps completed.
+    200000 steps completed.
+
+---------------------------------------------------------------
+Time used for this run = 321.171 second.
+Speed of this run = 1.76474e+08 atom*step/second.
+---------------------------------------------------------------
+
+Group 0 in grouping method 0 will be fixed.
+Use NVT ensemble for this run.
+    choose the Nose-Hoover chain method.
+    initial temperature is 1500 K.
+    final temperature is 1500 K.
+    tau_T is 100 time_step.
+Dump thermo every 1000 steps.
+Dump position.
+    every 50000 steps.
+Run 100000 steps.
+    10000 steps completed.
+    20000 steps completed.
+    30000 steps completed.
+    40000 steps completed.
+    50000 steps completed.
+    60000 steps completed.
+    70000 steps completed.
+    80000 steps completed.
+    90000 steps completed.
+    100000 steps completed.
+
+---------------------------------------------------------------
+Time used for this run = 160.773 second.
+Speed of this run = 1.76269e+08 atom*step/second.
+---------------------------------------------------------------
+
+Group 0 in grouping method 0 will be fixed.
+Use NVT ensemble for this run.
+    choose the Nose-Hoover chain method.
+    initial temperature is 1500 K.
+    final temperature is 675 K.
+    tau_T is 100 time_step.
+Dump thermo every 6000 steps.
+Dump position.
+    every 50000 steps.
+Run 600000 steps.
+    60000 steps completed.
+    120000 steps completed.
+    180000 steps completed.
+    240000 steps completed.
+    300000 steps completed.
+    360000 steps completed.
+    420000 steps completed.
+    480000 steps completed.
+    540000 steps completed.
+    600000 steps completed.
+
+---------------------------------------------------------------
+Time used for this run = 962.34 second.
+Speed of this run = 1.76689e+08 atom*step/second.
+---------------------------------------------------------------
+
+Group 0 in grouping method 0 will be fixed.
+Use NVT ensemble for this run.
+    choose the Nose-Hoover chain method.
+    initial temperature is 675 K.
+    final temperature is 675 K.
+    tau_T is 100 time_step.
+Dump thermo every 1000 steps.
+Dump position.
+    every 50000 steps.
+Run 100000 steps.
+    10000 steps completed.
+    20000 steps completed.
+    30000 steps completed.
+    40000 steps completed.
+    50000 steps completed.
+    60000 steps completed.
+    70000 steps completed.
+    80000 steps completed.
+    90000 steps completed.
+    100000 steps completed.
+
+---------------------------------------------------------------
+Time used for this run = 160.31 second.
+Speed of this run = 1.76778e+08 atom*step/second.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Finished executing the commands in run.in.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Time used = 1605.012140 s.
+---------------------------------------------------------------
+
+
+---------------------------------------------------------------
+Finished running GPUMD.
+---------------------------------------------------------------
+

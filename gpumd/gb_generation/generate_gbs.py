@@ -55,7 +55,6 @@ load_dotenv()
 
 from aimsgb import GrainBoundary, Grain
 from ase.io import read, write
-from ase.visualize.plot import plot_atoms
 from calorine.calculators import GPUNEP
 
 import sys
