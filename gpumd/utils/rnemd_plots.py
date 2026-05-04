@@ -30,10 +30,12 @@ def plot_temperature_profile(temps_times, bin_centers, result, out_dir,
     used to extract ΔT and kappa.
 
     What to look for:
-      - Converged profile: later cycles (darker colour) should overlap with
-        the cumulative average, indicating steady state.
-      - Clear linear regions on each side of the GB — curved profiles suggest
-        the system hasn't equilibrated or the box is too short.
+      - Panel 1: cumulative-average profiles converging (later/darker lines
+        should stabilise). Drift K in the title is the max per-bin difference
+        between the midpoint and final cumulative average — small means converged.
+      - Panel 2: clear linear regions on each side of the GB on the final
+        converged profile — curved profiles suggest the system hasn't
+        equilibrated or the box is too short.
       - Visible discontinuity at x_GB: if there's no step, TBR is very small
         or the GB was not preserved (check RDF and atom positions).
     """
@@ -47,22 +49,27 @@ def plot_temperature_profile(temps_times, bin_centers, result, out_dir,
     plt.subplots_adjust(hspace=0.35)
     fig.suptitle(f"{label} — run {run_index}", fontsize=12)
 
-    # Panel 1: Per-cycle temperature profiles
-    for i, cycle_temps in enumerate(temps_times):
-        axes[0].plot(bin_centers, cycle_temps, marker="o", markersize=2,
+    # Panel 1: Cumulative-average temperature profiles + drift detection
+    for i, avg in enumerate(cumulative_avg):
+        axes[0].plot(bin_centers, avg, marker="o", markersize=2,
                      linewidth=0.8, color=cmap(norm(i)), alpha=0.7)
+    mid_avg   = cumulative_avg[n_cycles // 2]
+    final_avg = cumulative_avg[-1]
+    drift_K   = float(np.max(np.abs(final_avg - mid_avg)))
     axes[0].set_ylabel("Temperature [K]")
-    axes[0].set_title("Per-cycle temperature profiles (light→dark = early→late)")
+    axes[0].set_title(
+        f"Cumulative-avg profiles (light→dark = early→late) — "
+        f"drift {drift_K:.1f} K (max bin, mid→final)"
+    )
     axes[0].axvline(bin_centers[cold_bin], color="blue", linestyle="--",
                     linewidth=0.8, label="cold bin")
     axes[0].axvline(bin_centers[hot_bin], color="red", linestyle="--",
                     linewidth=0.8, label="hot bin")
     axes[0].legend(fontsize=8)
 
-    # Panel 2: Cumulative average + linear fits
-    for i, avg in enumerate(cumulative_avg):
-        axes[1].plot(bin_centers, avg, marker="o", markersize=2,
-                     linewidth=0.8, color=cmap(norm(i)))
+    # Panel 2: Final cumulative average + linear fits
+    axes[1].plot(bin_centers, cumulative_avg[-1], marker="o", markersize=2,
+                 linewidth=0.8, color=cmap(norm(n_cycles - 1)))
 
     # Overlay final linear fits (primary + periodic duplicates)
     left_fit     = result["left_fit"]

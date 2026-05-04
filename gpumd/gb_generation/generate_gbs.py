@@ -112,6 +112,8 @@ _dump_interval_cfg = int(gb_cfg["dump_interval"]) if DEBUG else None
 def _make_stages(t_starts, t_ends, times_ps):
     stages = []
     for ts, te, tp in zip(t_starts, t_ends, times_ps):
+        if tp == 0:
+            continue
         n = int(tp * 1000.0 / TIMESTEP_FS)
         stages.append({
             "t_start": ts, "t_end": te, "total_time_ps": tp,
@@ -677,17 +679,15 @@ def plot_run_diagnostics(run_dir, out_dir, label, run_index, no_gb):
     thermo.out columns (GPUMD format):
         T  K  U  Pxx Pyy Pzz Pyz Pxz Pxy  ax ay az  bx by bz  cx cy cz
     """
-    stages_info = [
-        (os.path.join(run_dir, "npt_start"), NPT_START_STAGES, "npt_start"),
-    ]
-    if not no_gb:
-        stages_info.append(
-            (os.path.join(run_dir, "nvt_anneal"), NVT_ANNEAL_STAGES, "nvt_anneal")
-        )
-    stages_info += [
-        (os.path.join(run_dir, "nvt"), NVT_STAGES, "nvt"),
-        (os.path.join(run_dir, "npt"), NPT_STAGES, "npt"),
-    ]
+    stages_info = []
+    if NPT_START_STAGES:
+        stages_info.append((os.path.join(run_dir, "npt_start"), NPT_START_STAGES, "npt_start"))
+    if not no_gb and NVT_ANNEAL_STAGES:
+        stages_info.append((os.path.join(run_dir, "nvt_anneal"), NVT_ANNEAL_STAGES, "nvt_anneal"))
+    if NVT_STAGES:
+        stages_info.append((os.path.join(run_dir, "nvt"), NVT_STAGES, "nvt"))
+    if NPT_STAGES:
+        stages_info.append((os.path.join(run_dir, "npt"), NPT_STAGES, "npt"))
 
     all_time, all_T, all_P = [], [], []
     stage_spans = []  # (t_start, t_end, name) for background shading
@@ -833,23 +833,26 @@ def process_gb(axis, sigma, plane, s_input, start_run=0,
     print(f"  n_runs={N_RUNS - start_run} remaining")
 
     npt_start_profile = (" → ".join(f"{s['t_start']}K" for s in NPT_START_STAGES)
-                         + f" → {NPT_START_STAGES[-1]['t_end']}K")
+                         + f" → {NPT_START_STAGES[-1]['t_end']}K") if NPT_START_STAGES else ""
     anneal_profile    = (" → ".join(f"{s['t_start']}K" for s in NVT_ANNEAL_STAGES)
-                         + f" → {NVT_ANNEAL_STAGES[-1]['t_end']}K")
+                         + f" → {NVT_ANNEAL_STAGES[-1]['t_end']}K") if NVT_ANNEAL_STAGES else ""
     nvt_profile       = (" → ".join(f"{s['t_start']}K" for s in NVT_STAGES)
-                         + f" → {NVT_STAGES[-1]['t_end']}K")
+                         + f" → {NVT_STAGES[-1]['t_end']}K") if NVT_STAGES else ""
     npt_profile       = (" → ".join(f"{s['t_start']}K" for s in NPT_STAGES)
-                         + f" → {NPT_STAGES[-1]['t_end']}K")
+                         + f" → {NPT_STAGES[-1]['t_end']}K") if NPT_STAGES else ""
 
-    print(f"  npt_start : {npt_start_profile} over "
-          f"{sum(s['total_time_ps'] for s in NPT_START_STAGES):.0f} ps")
-    if not no_gb:
+    if NPT_START_STAGES:
+        print(f"  npt_start : {npt_start_profile} over "
+              f"{sum(s['total_time_ps'] for s in NPT_START_STAGES):.0f} ps")
+    if not no_gb and NVT_ANNEAL_STAGES:
         print(f"  nvt_anneal: {anneal_profile} over "
               f"{sum(s['total_time_ps'] for s in NVT_ANNEAL_STAGES):.0f} ps  (fix 0 on bulk atoms)")
-    print(f"  nvt       : {nvt_profile} over "
-          f"{sum(s['total_time_ps'] for s in NVT_STAGES):.0f} ps")
-    print(f"  npt       : {npt_profile} over "
-          f"{sum(s['total_time_ps'] for s in NPT_STAGES):.0f} ps")
+    if NVT_STAGES:
+        print(f"  nvt       : {nvt_profile} over "
+              f"{sum(s['total_time_ps'] for s in NVT_STAGES):.0f} ps")
+    if NPT_STAGES:
+        print(f"  npt       : {npt_profile} over "
+              f"{sum(s['total_time_ps'] for s in NPT_STAGES):.0f} ps")
     if OPTIMIZE:
         print(f"  fire      : FIRE fmax=0.05 eV/Å → 0 K energy")
     print(f"{'='*60}")
@@ -898,52 +901,63 @@ def process_gb(axis, sigma, plane, s_input, start_run=0,
             fire_dir      = os.path.join(run_dir, "fire")
             start_atoms   = gb_atoms.copy()
 
+            energy = None
+
             # Step 1: NPT heating ramp from cold to production temperature
-            if USE_CALORINE:
-                warm_atoms, npt_start_energy = cool_with_gpumd(
-                    start_atoms, npt_start_dir, NPT_START_STAGES, _NPT_START_PARAMS)
+            if NPT_START_STAGES:
+                if USE_CALORINE:
+                    warm_atoms, energy = cool_with_gpumd(
+                        start_atoms, npt_start_dir, NPT_START_STAGES, _NPT_START_PARAMS)
+                else:
+                    warm_atoms, energy = cool_with_gpumd_direct(
+                        start_atoms, npt_start_dir, NPT_START_STAGES, _NPT_START_PARAMS)
+                print(f"    npt_start done ({npt_start_profile} over "
+                      f"{sum(s['total_time_ps'] for s in NPT_START_STAGES):.0f} ps). "
+                      f"Energy = {energy:.6f} eV")
             else:
-                warm_atoms, npt_start_energy = cool_with_gpumd_direct(
-                    start_atoms, npt_start_dir, NPT_START_STAGES, _NPT_START_PARAMS)
-            print(f"    npt_start done ({npt_start_profile} over "
-                  f"{sum(s['total_time_ps'] for s in NPT_START_STAGES):.0f} ps). "
-                  f"Energy = {npt_start_energy:.6f} eV")
+                warm_atoms = start_atoms
 
             # Step 2: NVT anneal with frozen bulk (GB entries only)
-            if not no_gb:
+            if not no_gb and NVT_ANNEAL_STAGES:
                 if USE_CALORINE:
-                    anneal_atoms, anneal_energy = nvt_anneal_with_gpumd(
+                    anneal_atoms, energy = nvt_anneal_with_gpumd(
                         warm_atoms, anneal_dir, NVT_ANNEAL_STAGES)
                 else:
-                    anneal_atoms, anneal_energy = nvt_anneal_with_gpumd_direct(
+                    anneal_atoms, energy = nvt_anneal_with_gpumd_direct(
                         warm_atoms, anneal_dir, NVT_ANNEAL_STAGES)
                 print(f"    nvt_anneal done ({anneal_profile} over "
                       f"{sum(s['total_time_ps'] for s in NVT_ANNEAL_STAGES):.0f} ps). "
-                      f"Energy = {anneal_energy:.6f} eV")
+                      f"Energy = {energy:.6f} eV")
             else:
                 anneal_atoms = warm_atoms
 
             # Step 3: Brief NVT equilibration (all atoms free)
-            if USE_CALORINE:
-                nvt_atoms, nvt_energy = nvt_with_gpumd(
-                    anneal_atoms, nvt_dir, NVT_STAGES, NVT_TAU_T)
+            if NVT_STAGES:
+                if USE_CALORINE:
+                    nvt_atoms, energy = nvt_with_gpumd(
+                        anneal_atoms, nvt_dir, NVT_STAGES, NVT_TAU_T)
+                else:
+                    nvt_atoms, energy = nvt_with_gpumd_direct(
+                        anneal_atoms, nvt_dir, NVT_STAGES, NVT_TAU_T)
+                print(f"    nvt done ({nvt_profile} over "
+                      f"{sum(s['total_time_ps'] for s in NVT_STAGES):.0f} ps). "
+                      f"Energy = {energy:.6f} eV")
             else:
-                nvt_atoms, nvt_energy = nvt_with_gpumd_direct(
-                    anneal_atoms, nvt_dir, NVT_STAGES, NVT_TAU_T)
-            print(f"    nvt done ({nvt_profile} over "
-                  f"{sum(s['total_time_ps'] for s in NVT_STAGES):.0f} ps). "
-                  f"Energy = {nvt_energy:.6f} eV")
+                nvt_atoms = anneal_atoms
 
             # Step 4: Brief NPT equilibration
-            if USE_CALORINE:
-                final_atoms, energy = cool_with_gpumd(
-                    nvt_atoms, npt_dir, NPT_STAGES, _NPT_PARAMS)
+            if NPT_STAGES:
+                if USE_CALORINE:
+                    final_atoms, energy = cool_with_gpumd(
+                        nvt_atoms, npt_dir, NPT_STAGES, _NPT_PARAMS)
+                else:
+                    final_atoms, energy = cool_with_gpumd_direct(
+                        nvt_atoms, npt_dir, NPT_STAGES, _NPT_PARAMS)
+                print(f"    npt done ({npt_profile} over "
+                      f"{sum(s['total_time_ps'] for s in NPT_STAGES):.0f} ps). "
+                      f"Energy = {energy:.6f} eV")
             else:
-                final_atoms, energy = cool_with_gpumd_direct(
-                    nvt_atoms, npt_dir, NPT_STAGES, _NPT_PARAMS)
-            print(f"    npt done ({npt_profile} over "
-                  f"{sum(s['total_time_ps'] for s in NPT_STAGES):.0f} ps). "
-                  f"Energy = {energy:.6f} eV")
+                final_atoms = nvt_atoms
 
             # Step 5: FIRE optimization to 0 K (optional)
             energy_0k = None
