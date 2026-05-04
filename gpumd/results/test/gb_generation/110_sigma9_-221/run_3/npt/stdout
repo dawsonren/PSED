@@ -19,9 +19,9 @@ GPU information:
 
 number of GPUs = 1
 Device id:                   0
-    Device name:             NVIDIA A100-SXM4-80GB
+    Device name:             NVIDIA A100-PCIE-40GB
     Compute capability:      8.0
-    Amount of global memory: 79.2517 GB
+    Amount of global memory: 39.4945 GB
     Number of SMs:           108
 
 ---------------------------------------------------------------
@@ -38,13 +38,13 @@ Use periodic boundary conditions along x.
 Use periodic boundary conditions along y.
 Use periodic boundary conditions along z.
 Box matrix h = [a, b, c] is
-    4.6304035000e+01    0.0000000000e+00    0.0000000000e+00
-    0.0000000000e+00    3.0869357000e+01    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    2.0299976000e+03
+    4.6305406000e+01    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.0870270000e+01    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    2.0300577000e+03
 Inverse box matrix g = inv(h) is
-    2.1596390034e-02    0.0000000000e+00    0.0000000000e+00
-    0.0000000000e+00    3.2394584701e-02    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    4.9261141984e-04
+    2.1595750613e-02    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.2393626619e-02    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    4.9259683604e-04
 Do not specify initial velocities here.
 Have no grouping method.
 There is only one atom type.
@@ -88,8 +88,8 @@ Run 50000 steps.
     50000 steps completed.
 
 ---------------------------------------------------------------
-Time used for this run = 42.7307 second.
-Speed of this run = 1.67149e+08 atom*step/second.
+Time used for this run = 42.5444 second.
+Speed of this run = 1.67881e+08 atom*step/second.
 ---------------------------------------------------------------
 
 
@@ -99,7 +99,7 @@ Finished executing the commands in run.in.
 
 
 ---------------------------------------------------------------
-Time used = 42.953084 s.
+Time used = 42.716284 s.
 ---------------------------------------------------------------
 
 

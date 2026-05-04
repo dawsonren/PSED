@@ -13,7 +13,7 @@ gb_generation:
   z_nm: 200.0
   timestep_fs: 1.0
   # control replications
-  n_runs: 5
+  n_runs: 10
   # control initial npt
   npt_start:
     t_start: 10
@@ -24,10 +24,10 @@ gb_generation:
     tau_p: 1000
     total_time_ps: 20.0
   nvt_anneal:
-    t_start: [675, 1500, 1500, 675]
-    t_end: [1500, 1500, 675, 675]
+    t_start: [675, 1200, 1200]
+    t_end: [1200, 1200, 675]
     tau_t: 100.0
-    total_time_ps: [200, 100, 600, 100]
+    total_time_ps: [100, 100, 400]
     gb_margin_nm: 8
   nvt:
     t_start: 675
@@ -55,7 +55,7 @@ rnemd:
   timestep_fs: 2
   n_warmup_cycles: 400          # warmup cycles to build gradient before recording data
   n_cycles: 200                  # number of production cycles (velocity swaps after each)
-  steps_per_cycle: 2500           # controls the frequency of velocity swaps
+  steps_per_cycle: 1000           # controls the frequency of velocity swaps
   # control replications
   n_runs: 5                # independent rNEMD simulations per structure (for uncertainty)
   # control simulation parameters

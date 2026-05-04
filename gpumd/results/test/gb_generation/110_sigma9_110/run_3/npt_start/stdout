@@ -19,9 +19,9 @@ GPU information:
 
 number of GPUs = 1
 Device id:                   0
-    Device name:             NVIDIA A100-SXM4-80GB
+    Device name:             NVIDIA A100-PCIE-40GB
     Compute capability:      8.0
-    Amount of global memory: 79.2517 GB
+    Amount of global memory: 39.4945 GB
     Number of SMs:           108
 
 ---------------------------------------------------------------
@@ -88,8 +88,8 @@ Run 20000 steps.
     20000 steps completed.
 
 ---------------------------------------------------------------
-Time used for this run = 16.9648 second.
-Speed of this run = 1.76554e+08 atom*step/second.
+Time used for this run = 16.989 second.
+Speed of this run = 1.76302e+08 atom*step/second.
 ---------------------------------------------------------------
 
 
@@ -99,7 +99,7 @@ Finished executing the commands in run.in.
 
 
 ---------------------------------------------------------------
-Time used = 17.196375 s.
+Time used = 17.173411 s.
 ---------------------------------------------------------------
 
 
