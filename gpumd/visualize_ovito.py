@@ -129,8 +129,8 @@ def plot_gb_crosssection(data, slab_thickness_ang: float, z_width_nm: float,
 def process_traj(traj_path: Path, slab_thickness_ang: float, z_width_nm: float,
                  slice_axis: str):
     run_dir  = traj_path.parent
-    xyz_path = run_dir / "structure_last.xyz"
-    png_path = run_dir / f"gb_crosssection_{slice_axis}.png"
+    xyz_path = run_dir / f"{traj_path.stem}_last.xyz"
+    png_path = run_dir / f"{traj_path.stem}_gb_crosssection_{slice_axis}.png"
 
     print(f"  [traj] {traj_path.relative_to(RESULTS_DIR)}")
     traj_to_extxyz(traj_path, xyz_path)
@@ -139,24 +139,44 @@ def process_traj(traj_path: Path, slab_thickness_ang: float, z_width_nm: float,
 
 
 def iter_traj_files(config_name: str):
-    """Yield every run_*/structure.traj under results/<config>/gb_generation/."""
-    gbgen_dir = RESULTS_DIR / config_name / "gb_generation"
-    if not gbgen_dir.exists():
-        print(f"error: {gbgen_dir} does not exist", file=sys.stderr)
+    """Yield traj files under results/<config>/{gb_generation,rnemd}/."""
+    config_dir = RESULTS_DIR / config_name
+    gbgen_dir  = config_dir / "gb_generation"
+    rnemd_dir  = config_dir / "rnemd"
+
+    if not gbgen_dir.exists() and not rnemd_dir.exists():
+        print(f"error: neither {gbgen_dir} nor {rnemd_dir} exists", file=sys.stderr)
         sys.exit(1)
 
     found_any = False
-    for gb_dir in sorted(p for p in gbgen_dir.iterdir() if p.is_dir()):
-        for run_dir in sorted(p for p in gb_dir.iterdir() if p.is_dir() and p.name.startswith("run_")):
-            traj_path = run_dir / "structure.traj"
-            if traj_path.exists():
+
+    if gbgen_dir.exists():
+        for gb_dir in sorted(p for p in gbgen_dir.iterdir() if p.is_dir()):
+            initial_path = gb_dir / "initial.traj"
+            if initial_path.exists():
                 found_any = True
-                yield traj_path
-            else:
-                print(f"  [skip] no structure.traj in {run_dir.relative_to(RESULTS_DIR)}")
+                yield initial_path
+            for run_dir in sorted(p for p in gb_dir.iterdir() if p.is_dir() and p.name.startswith("run_")):
+                traj_path = run_dir / "structure.traj"
+                if traj_path.exists():
+                    found_any = True
+                    yield traj_path
+                else:
+                    print(f"  [skip] no structure.traj in {run_dir.relative_to(RESULTS_DIR)}")
+
+    if rnemd_dir.exists():
+        for gb_dir in sorted(p for p in rnemd_dir.iterdir() if p.is_dir()):
+            for struct_dir in sorted(p for p in gb_dir.iterdir() if p.is_dir() and p.name.startswith("structure_")):
+                for run_dir in sorted(p for p in struct_dir.iterdir() if p.is_dir() and p.name.startswith("run_")):
+                    traj_path = run_dir / "final_atoms.traj"
+                    if traj_path.exists():
+                        found_any = True
+                        yield traj_path
+                    else:
+                        print(f"  [skip] no final_atoms.traj in {run_dir.relative_to(RESULTS_DIR)}")
 
     if not found_any:
-        print(f"  (no structure.traj files found under {gbgen_dir})")
+        print(f"  (no traj files found under {config_dir})")
 
 
 def parse_args():
@@ -164,10 +184,10 @@ def parse_args():
         description="Render GB cross-section PNGs from structure.traj files under results/<config>/gb_generation/.",
     )
     p.add_argument("config", help="Config name (file under configs/, without .yaml).")
-    p.add_argument("--slab-thickness", type=float, default=5.0, dest="slab_thickness",
-                   help="Slab thickness in Å along the slice axis (default: 5.0).")
-    p.add_argument("--z-width", type=float, default=4.0, dest="z_width",
-                   help="Plot window along z in nm, centered on the GB (default: 4.0).")
+    p.add_argument("--slab-thickness", type=float, default=10.0, dest="slab_thickness",
+                   help="Slab thickness in Å along the slice axis (default: 10.0).")
+    p.add_argument("--z-width", type=float, default=10.0, dest="z_width",
+                   help="Plot window along z in nm, centered on the GB (default: 10.0).")
     p.add_argument("--axis", choices=("x", "y"), default="y",
                    help="Which axis to slice along (default: y).")
     return p.parse_args()
