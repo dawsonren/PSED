@@ -60,7 +60,7 @@ from calorine.calculators import GPUNEP
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.work_coordination import (
-    gb_label, check_gb_generation_status,
+    gb_label, check_gb_generation_status, resolve_results_base,
     try_claim, release_claim, CLAIM_STALE_HOURS,
 )
 from utils.gb_energy import bulk_energy_per_atom
@@ -95,7 +95,7 @@ NEP_MODEL_FILE = str(GPUMD_ROOT / config["nep_model"])
 GPUMD_EXEC     = os.path.expandvars(config["gpumd_exec"])
 USE_CALORINE   = bool(config.get("use_calorine", False))
 
-RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
+RESULTS_DIR    = str(resolve_results_base(config, GPUMD_ROOT) / CONFIG_NAME / "gb_generation")
 
 gb_cfg = config["gb_generation"]
 BOX_SIZE    = np.array([float(gb_cfg["x_nm"]) * 10, float(gb_cfg["y_nm"]) * 10, float(gb_cfg["z_nm"]) * 10])
@@ -1050,7 +1050,7 @@ def main():
             print(f"\nSkipping {BULK_SI_LABEL}: claimed by another worker.")
             continue
         try:
-            start_run = N_RUNS - info["runs_remaining"]
+            start_run = max(N_RUNS - info["runs_remaining"], 0)
             process_gb(axis, sigma, plane, s_input, start_run=start_run)
         finally:
             release_claim(claim_path)
@@ -1085,7 +1085,7 @@ def main():
             print(f"\nSkipping {label}: claimed by another worker.")
             continue
         try:
-            start_run = N_RUNS - info["runs_remaining"]
+            start_run = max(N_RUNS - info["runs_remaining"], 0)
             process_gb(axis, sigma, plane, s_input, start_run=start_run,
                        e_bulk_per_atom=e_bulk, e_bulk_0k_per_atom=e_bulk_0k)
         finally:

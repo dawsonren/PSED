@@ -36,6 +36,7 @@ Kapitza resistance: R_K = ΔT_GB / J
 
 import os
 import csv
+import shutil
 import argparse
 import subprocess
 import warnings
@@ -51,6 +52,7 @@ from tqdm import tqdm
 
 from ase import units
 from ase.io import read, write
+from ase.io.extxyz import XYZError
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.visualize.plot import plot_atoms
 warnings.filterwarnings("ignore", message=".*is not empty.*", module="calorine")
@@ -62,8 +64,8 @@ from utils.muller_plathe import swap_velocities, bin_atoms
 from utils.rnemd_stats import check_steady_state, aggregate_run_results, format_result_summary
 from utils.rnemd_plots import plot_temperature_profile, plot_energy_diagnostics, plot_temperature_profile_animated
 from utils.work_coordination import (
-    gb_label, check_rnemd_status,
-    try_claim, release_claim, CLAIM_STALE_HOURS,
+    gb_label, check_rnemd_status, resolve_results_base,
+    try_claim, refresh_claim, release_claim, CLAIM_STALE_HOURS,
 )
 
 # ---------------------------------------------------------------------------
@@ -101,8 +103,9 @@ NEP_MODEL_FILE = str(GPUMD_ROOT / config["nep_model"])
 GPUMD_EXEC     = os.path.expandvars(config["gpumd_exec"])
 USE_CALORINE   = bool(config.get("use_calorine", False))
 
-GB_RESULTS_DIR    = str(GPUMD_ROOT / "results" / CONFIG_NAME / "gb_generation")
-RNEMD_RESULTS_DIR = str(GPUMD_ROOT / "results" / CONFIG_NAME / "rnemd")
+RESULTS_BASE      = resolve_results_base(config, GPUMD_ROOT)
+GB_RESULTS_DIR    = str(RESULTS_BASE / CONFIG_NAME / "gb_generation")
+RNEMD_RESULTS_DIR = str(RESULTS_BASE / CONFIG_NAME / "rnemd")
 
 rnemd_cfg = config["rnemd"]
 NBINS            = int(rnemd_cfg["nbins"])
@@ -235,6 +238,31 @@ def run_one_cycle_gpumd(atoms, run_dir):
     return updated, ke, pe
 
 
+def _gpumd_output_error(run_dir, path, detail):
+    """Build a clear, actionable error for a corrupt/truncated GPUMD output file.
+
+    In production the usual culprits are (a) the filesystem quota being exceeded
+    mid-write — GPUMD does not check write return codes, so it reports success
+    while leaving a truncated/headerless file — and (b) two workers writing into
+    the same run directory after a stale-claim steal.  We surface both, plus the
+    free space on the output volume, so a multi-hour run fails with a diagnosis
+    instead of a cryptic downstream ASE/broadcast error.
+    """
+    try:
+        free_gb = shutil.disk_usage(run_dir).free / 1e9
+        space = f"{free_gb:.2f} GB free on output volume"
+    except OSError:
+        space = "free space unknown"
+    return (
+        f"Corrupt GPUMD output in {run_dir}:\n"
+        f"    {path}: {detail}\n"
+        f"  GPUMD reported success but the file is truncated/garbled. Likely causes:\n"
+        f"    1. Disk quota exceeded mid-write ({space}; check your quota).\n"
+        f"    2. Another worker writing into the same run dir (stale-claim steal).\n"
+        f"  Completed runs are preserved; fix storage/claims and re-run."
+    )
+
+
 def run_one_cycle(atoms, run_dir):
     """
     Run STEPS_PER_CYCLE MD steps via GPUMD, read back velocities, and return
@@ -278,11 +306,13 @@ def run_one_cycle(atoms, run_dir):
     # reads vel as Å/fs.  Without this, velocities are ~10x too large.
     atoms.set_velocities(atoms.get_velocities() * units.fs)
 
-    # Remove stale movie.xyz before each cycle: GPUMD appends rather than
-    # overwrites, so a leftover file from an interrupted run corrupts reads.
-    movie_path = os.path.join(run_dir, "movie.xyz")
-    if os.path.exists(movie_path):
-        os.remove(movie_path)
+    # Remove stale dump files before each cycle: GPUMD appends rather than
+    # overwrites, so leftovers from an interrupted/crashed run (resumed in the
+    # same dir) would be appended to and corrupt the reads below.
+    for fname in ("movie.xyz", "velocity.out", "position.out", "thermo.out"):
+        fpath = os.path.join(run_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
 
     # NOTE: Must re-create calculator each cycle (calorine limitation)
     calc = GPUNEP(
@@ -293,11 +323,28 @@ def run_one_cycle(atoms, run_dir):
         atoms=atoms,
     )
 
-    atoms = calc.run_custom_md(md_params, return_last_atoms=True)
+    # Validate GPUMD output before trusting it.  A truncated movie.xyz makes
+    # calorine's internal read raise StopIteration/XYZError/ValueError; catch
+    # those and re-raise with a clear cause instead of a cryptic ASE traceback.
+    n_expected = len(atoms)
+    movie_path = os.path.join(run_dir, "movie.xyz")
+    try:
+        atoms = calc.run_custom_md(md_params, return_last_atoms=True)
+    except (StopIteration, XYZError, ValueError) as exc:
+        raise RuntimeError(_gpumd_output_error(run_dir, movie_path, repr(exc))) from exc
+
+    if len(atoms) != n_expected:
+        raise RuntimeError(_gpumd_output_error(
+            run_dir, movie_path,
+            f"last frame has {len(atoms)} atoms, expected {n_expected}"))
 
     # Read velocities from GPUMD output (last len(atoms) lines)
     vel_path = os.path.join(run_dir, "velocity.out")
-    vels = pd.read_csv(vel_path, sep=" ", header=None).iloc[-len(atoms):, :]
+    vels = pd.read_csv(vel_path, sep=" ", header=None).iloc[-n_expected:, :]
+    if len(vels) != n_expected:
+        raise RuntimeError(_gpumd_output_error(
+            run_dir, vel_path,
+            f"{len(vels)} usable rows, expected {n_expected} (truncated write)"))
     atoms.set_velocities(vels.values / units.fs)  # GPUMD (Å/fs) -> ASE units
 
     # Read kinetic and potential energy from thermo.out (columns 1=K, 2=U in eV)
@@ -327,7 +374,7 @@ def run_one_cycle(atoms, run_dir):
 # ---------------------------------------------------------------------------
 
 def compute_tbr_and_kappa(temps_avg, velocities_hc, bin_centers_angstrom,
-                           cross_section_angstrom2, total_time_fs):
+                           cross_section_angstrom2, total_time_fs, is_bulk=False):
     """
     Compute Kapitza resistance (TBR) and bulk thermal conductivity from
     the converged average temperature profile and cumulative swap velocities.
@@ -381,19 +428,57 @@ def compute_tbr_and_kappa(temps_avg, velocities_hc, bin_centers_angstrom,
     cold_dup_slice = slice(margin, COLD_BIN - margin)          # start → cold (slope < 0)
     hot_dup_slice  = slice(HOT_BIN + margin, NBINS - margin)   # hot → end   (slope < 0)
 
-    x_left      = bin_centers_angstrom[left_slice]
-    T_left      = temps_avg[left_slice]
-    x_right     = bin_centers_angstrom[right_slice]
-    T_right     = temps_avg[right_slice]
     x_cold_dup  = bin_centers_angstrom[cold_dup_slice]
     T_cold_dup  = temps_avg[cold_dup_slice]
     x_hot_dup   = bin_centers_angstrom[hot_dup_slice]
     T_hot_dup   = temps_avg[hot_dup_slice]
+    cold_dup_fit = np.polyfit(x_cold_dup, T_cold_dup, 1)  # slope < 0 (start→cold wrap)
+    hot_dup_fit  = np.polyfit(x_hot_dup,  T_hot_dup,  1)  # slope < 0 (hot→end wrap)
+
+    bin_width = bin_centers_angstrom[1] - bin_centers_angstrom[0]
+    box_length_angstrom = bin_centers_angstrom[-1] + bin_width / 2.0
+
+    if is_bulk:
+        # No grain boundary: fit a single slope across the full cold→hot region
+        # instead of splitting at gb_bin. The falling region (hot→cold via periodic
+        # wrap) uses the average magnitude of the two separate dup fits.
+        rising_slice = slice(COLD_BIN + margin, HOT_BIN - margin)
+        x_rising = bin_centers_angstrom[rising_slice]
+        T_rising = temps_avg[rising_slice]
+        rising_fit = np.polyfit(x_rising, T_rising, 1)  # slope > 0
+
+        rising_slope  = rising_fit[0]                                    # K/Å, > 0
+        falling_slope = (-hot_dup_fit[0] + (-cold_dup_fit[0])) / 2.0   # K/Å, > 0
+
+        dTdx_rising_SI  = rising_slope  * 1e10  # K/m
+        dTdx_falling_SI = falling_slope * 1e10  # K/m
+        dTdx_SI         = (rising_slope + falling_slope) / 2.0 * 1e10
+
+        kappa_rising  = abs(J / dTdx_rising_SI)  if dTdx_rising_SI  > 0 else np.nan
+        kappa_falling = abs(J / dTdx_falling_SI) if dTdx_falling_SI > 0 else np.nan
+        kappa         = np.nanmean([kappa_rising, kappa_falling])
+
+        return {
+            "R_K_SI": np.nan,
+            "kappa_SI": kappa,
+            "kappa_cold_SI": kappa_rising,   # rising (cold→hot) slope
+            "kappa_hot_SI": kappa_falling,   # falling (hot→cold) slope
+            "J_SI": J,
+            "delta_T": np.nan,
+            "dTdx_K_per_m": dTdx_SI,
+            "left_fit": rising_fit,   # same fit used for both halves of rising region
+            "right_fit": rising_fit,
+            "cold_dup_fit": cold_dup_fit,
+            "hot_dup_fit": hot_dup_fit,
+        }
+
+    x_left      = bin_centers_angstrom[left_slice]
+    T_left      = temps_avg[left_slice]
+    x_right     = bin_centers_angstrom[right_slice]
+    T_right     = temps_avg[right_slice]
 
     left_fit     = np.polyfit(x_left,     T_left,     1)  # slope > 0 (cold→GB)
     right_fit    = np.polyfit(x_right,    T_right,    1)  # slope > 0 (GB→hot)
-    cold_dup_fit = np.polyfit(x_cold_dup, T_cold_dup, 1)  # slope < 0 (start→cold wrap)
-    hot_dup_fit  = np.polyfit(x_hot_dup,  T_hot_dup,  1)  # slope < 0 (hot→end wrap)
 
     # Per-grain average gradient magnitude:
     #   cold grain: average of left_fit[0] (> 0) and −cold_dup_fit[0] (> 0)
@@ -421,8 +506,6 @@ def compute_tbr_and_kappa(temps_avg, velocities_hc, bin_centers_angstrom,
 
     # Duplicate TBR: extrapolate cold_dup and hot_dup fits to the periodic boundary
     # (x=0 and x=box_length are the same physical point — the duplicate GB).
-    bin_width = bin_centers_angstrom[1] - bin_centers_angstrom[0]
-    box_length_angstrom = bin_centers_angstrom[-1] + bin_width / 2.0
     T_cold_dup_at_dup_gb = np.polyval(cold_dup_fit, 0.0)
     T_hot_dup_at_dup_gb  = np.polyval(hot_dup_fit, box_length_angstrom)
     delta_T_dup = abs(T_cold_dup_at_dup_gb - T_hot_dup_at_dup_gb)
@@ -450,7 +533,7 @@ def compute_tbr_and_kappa(temps_avg, velocities_hc, bin_centers_angstrom,
 # Per-structure RNEMD runner
 # ---------------------------------------------------------------------------
 
-def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
+def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir, heartbeat=None):
     """
     Full rNEMD pipeline for a single relaxed structure with N_RUNS independent
     simulations for uncertainty estimation.
@@ -523,6 +606,8 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         if N_WARMUP_CYCLES > 0:
             print(f"    Warmup ({N_WARMUP_CYCLES} cycles)...")
             for _ in tqdm(range(N_WARMUP_CYCLES), desc="      warmup"):
+                if heartbeat:
+                    heartbeat()
                 run_atoms, _, _ = run_one_cycle(run_atoms, run_dir)
                 swap_velocities(run_atoms, binned[COLD_BIN], binned[HOT_BIN])
             print(f"    Warmup done. T = {run_atoms.get_temperature():.1f} K")
@@ -557,6 +642,8 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
             csv.writer(f_csv).writerow(["cycle"] + [f"bin_{i}" for i in range(NBINS)])
 
         for cycle in (pbar := tqdm(range(N_CYCLES))):
+            if heartbeat:
+                heartbeat()
             run_atoms, ke_per_cycle[cycle], pe_per_cycle[cycle] = run_one_cycle(run_atoms, run_dir)
 
             # Müller-Plathe velocity swap
@@ -598,6 +685,7 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
         result = compute_tbr_and_kappa(
             temps_avg, velocities_hc, bin_centers,
             cross_section, total_time_fs,
+            is_bulk=(gb_label_str == BULK_SI_LABEL),
         )
         result.update({
             "structure_index": structure_index,
@@ -642,7 +730,7 @@ def run_rnemd_on_structure(atoms, structure_index, gb_label_str, out_dir):
 # Main loop
 # ---------------------------------------------------------------------------
 
-def process_gb_type(gb_label_str):
+def process_gb_type(gb_label_str, claim_path=None):
     gb_dir = os.path.join(GB_RESULTS_DIR, gb_label_str)
 
     # Use summary.csv to find the run with the lowest energy
@@ -671,8 +759,12 @@ def process_gb_type(gb_label_str):
     struct_dir = os.path.join(out_base, f"structure_{best_run_index}")
     print(f"\n--- Structure run_{best_run_index} (E={best_energy:.4f} eV) ---")
 
+    # Heartbeat keeps this GB's claim fresh while it runs (~22 h), so another
+    # worker won't see it as stale and start writing into the same run dir.
+    heartbeat = (lambda: refresh_claim(claim_path)) if claim_path else None
+
     all_run_results, _ = run_rnemd_on_structure(
-        atoms, best_run_index, gb_label_str, struct_dir
+        atoms, best_run_index, gb_label_str, struct_dir, heartbeat=heartbeat
     )
 
     # --- Per-run summary CSV (append to existing rows if present) ---
@@ -771,7 +863,7 @@ def main():
             continue
 
         try:
-            process_gb_type(label)
+            process_gb_type(label, claim_path)
         finally:
             release_claim(claim_path)
 

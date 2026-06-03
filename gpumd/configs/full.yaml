@@ -1,6 +1,11 @@
 # paths (relative to gpumd/ root)
-nep_model: potentials/Si_Fan_2019.txt
+nep_model: potentials/Si_GAP_nep.txt
 gpumd_exec: /home/djr2473/exec/gpumd
+
+# Base dir for all results. Kept off the quota-limited home directory so bulk
+# GPUMD output (model.xyz ~20 MB/run, movie/velocity dumps) cannot exceed quota
+# mid-write and silently truncate. Omit this key to default to gpumd/results.
+results_dir: /projects/p33174/PSED_results
 
 # use calorine flag
 use_calorine: true
@@ -13,7 +18,7 @@ gb_generation:
   z_nm: 200.0
   timestep_fs: 1.0
   # control replications
-  n_runs: 5
+  n_runs: 3
   # control initial npt
   npt_start:
     t_start: 10
@@ -22,26 +27,26 @@ gb_generation:
     pressure_gpa: 0
     bulk_modulus_gpa: 100
     tau_p: 1000
-    total_time_ps: 20.0
+    total_time_ps: 100.0
   nvt_anneal:
-    t_start: [675, 1500, 1500]
-    t_end: [1500, 1500, 675]
+    t_start: []
+    t_end: []
     tau_t: 100.0
-    total_time_ps: [200, 100, 600, 100]
-    gb_margin_nm: 10
+    total_time_ps: []
+    gb_margin_nm: 8
   nvt:
     t_start: 675
     t_end: 675
     tau_t: 100.0         
-    total_time_ps: 50.0
+    total_time_ps: 15.0
   npt:
     t_start: 675
-    t_end: 675            
+    t_end: 675
     tau_t: 100.0       
     pressure_gpa: 0        
     bulk_modulus_gpa: 100.0  
     tau_p: 1000 
-    total_time_ps: 50.0
+    total_time_ps: 15.0
   # control debugging plots (can be slow) and intermediate structure dumps
   optimize: false
   debug: true
@@ -54,8 +59,8 @@ rnemd:
   # control simulation length, total steps = n_cycles * steps_per_cycle
   timestep_fs: 2
   n_warmup_cycles: 400          # warmup cycles to build gradient before recording data
-  n_cycles: 200                  # number of production cycles (velocity swaps after each)
-  steps_per_cycle: 2500           # controls the frequency of velocity swaps
+  n_cycles: 800                  # number of production cycles (velocity swaps after each)
+  steps_per_cycle: 1000           # controls the frequency of velocity swaps
   # control replications
   n_runs: 5                # independent rNEMD simulations per structure (for uncertainty)
   # control simulation parameters

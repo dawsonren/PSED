@@ -11,9 +11,13 @@ from pathlib import Path
 
 import yaml
 
-# A claim older than this (with no completion) is treated as stale and re-claimable.
-# Should be comfortably longer than the expected wall time for one GB.
-CLAIM_STALE_HOURS = 8
+# A claim older than this (with no heartbeat) is treated as stale and
+# re-claimable.  Workers refresh their claim's mtime as they run (see
+# refresh_claim), so this only needs to exceed the longest gap between
+# heartbeats (a single MD stage/cycle), NOT the whole per-GB wall time.
+# A full GB takes ~22 h, so the old value of 8 h caused a second worker to
+# steal a still-running claim and corrupt the shared run directory.
+CLAIM_STALE_HOURS = 6
 
 
 def gb_label(axis, sigma, plane):
@@ -21,6 +25,29 @@ def gb_label(axis, sigma, plane):
     a = "".join(str(x) for x in axis)
     p = "".join(str(x) for x in plane)
     return f"{a}_sigma{sigma}_{p}"
+
+
+def resolve_results_base(config, gpumd_root):
+    """Return the base directory under which all results are written.
+
+    Honors an optional top-level ``results_dir`` key in the config (absolute
+    path, with ``~`` and ``$VARS`` expanded) so bulk MD output can live on
+    large/unquota'd storage (e.g. /projects or /scratch) instead of the
+    quota-limited home directory.  Falls back to ``<gpumd_root>/results`` for
+    backward compatibility when the key is absent.
+
+    The path is resolved to its real (symlink-free) location.  This matters
+    because callers write GPUMD run.in files with a *relative* potential path
+    (os.path.relpath against the run dir).  GPUMD's fopen resolves ".."
+    physically, so if the run dir is reached through a symlink (e.g.
+    /projects -> /gpfs/projects), a relpath computed against the logical path
+    is short one ".." and GPUMD fails with "cannot open ...nep.txt".  Resolving
+    here keeps every derived run dir on the same physical basis as the model.
+    """
+    rd = config.get("results_dir")
+    if rd:
+        return Path(os.path.expanduser(os.path.expandvars(str(rd)))).resolve()
+    return (Path(gpumd_root) / "results").resolve()
 
 
 def try_claim(claim_path, stale_hours=CLAIM_STALE_HOURS):
@@ -62,6 +89,18 @@ def try_claim(claim_path, stale_hours=CLAIM_STALE_HOURS):
     return False
 
 
+def refresh_claim(claim_path):
+    """Update a held claim's mtime so an actively-worked slot is not seen as
+    stale by other workers.  Call this periodically (e.g. once per MD cycle)
+    while holding the claim.  Silently no-ops if the claim file is gone (it
+    was released or stolen); the caller keeps running but its slot may now be
+    claimable by another worker."""
+    try:
+        os.utime(claim_path, None)
+    except (FileNotFoundError, OSError):
+        pass
+
+
 def release_claim(claim_path):
     """Remove a claim file once work is done (or on error)."""
     try:
@@ -99,7 +138,7 @@ def check_gb_generation_status(yaml_path):
         config = yaml.safe_load(f)
 
     n_runs = int(config["gb_generation"]["n_runs"])
-    results_dir = gpumd_root / "results" / config_name / "gb_generation"
+    results_dir = resolve_results_base(config, gpumd_root) / config_name / "gb_generation"
 
     status = {}
     for entry in config["grain_boundaries"]:
@@ -120,7 +159,7 @@ def check_gb_generation_status(yaml_path):
             continue
 
         with open(summary_path, "r") as f:
-            n_data_rows = sum(1 for _ in csv.reader(f)) - 1  # subtract header
+            n_data_rows = max(sum(1 for _ in csv.reader(f)) - 1, 0)  # subtract header, clamp to 0
 
         runs_remaining = max(n_runs - n_data_rows, 0)
         status[label] = {
@@ -158,7 +197,7 @@ def check_rnemd_status(yaml_path):
         config = yaml.safe_load(f)
 
     n_runs = int(config["rnemd"]["n_runs"])
-    results_dir = gpumd_root / "results" / config_name / "rnemd"
+    results_dir = resolve_results_base(config, gpumd_root) / config_name / "rnemd"
 
     status = {}
     for entry in config["grain_boundaries"]:

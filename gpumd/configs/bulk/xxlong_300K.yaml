@@ -1,0 +1,73 @@
+# paths (relative to gpumd/ root)
+nep_model: potentials/Si_Fan_2019.txt
+gpumd_exec: /home/djr2473/exec/gpumd
+
+# use calorine flag
+use_calorine: true
+
+# GB generation parameters
+gb_generation:
+  # control simulation box size (MD has heat flow over z-axis)
+  x_nm: 2.5
+  y_nm: 2.5
+  z_nm: 600.0
+  timestep_fs: 1.0
+  # control replications
+  n_runs: 1
+  # control initial npt
+  npt_start:
+    t_start: 10
+    t_end: 300
+    tau_t: 100.0
+    pressure_gpa: 0
+    bulk_modulus_gpa: 100
+    tau_p: 1000
+    total_time_ps: 100.0
+  nvt_anneal:
+    t_start: []
+    t_end: []
+    tau_t: 100.0
+    total_time_ps: []
+    gb_margin_nm: 10
+  nvt:
+    t_start: 300
+    t_end: 300
+    tau_t: 100.0         
+    total_time_ps: 50.0
+  npt:
+    t_start: 300
+    t_end: 300            
+    tau_t: 100.0       
+    pressure_gpa: 0        
+    bulk_modulus_gpa: 100.0  
+    tau_p: 1000 
+    total_time_ps: 50.0
+  # control debugging plots (can be slow) and intermediate structure dumps
+  optimize: false
+  debug: true
+  dump_interval: 50000
+
+# RNEMD parameters
+rnemd:
+  # control rnemd setup
+  nbins: 600                # must be even (symmetric PBC paths)
+  # control simulation length, total steps = n_cycles * steps_per_cycle
+  timestep_fs: 2
+  n_warmup_cycles: 400          # warmup cycles to build gradient before recording data
+  n_cycles: 800                 # number of production cycles (velocity swaps after each)
+  steps_per_cycle: 1000         # controls the frequency of velocity swaps
+  # control replications
+  n_runs: 10                 # independent rNEMD simulations per structure (for uncertainty)
+  # control simulation parameters
+  ensemble: "nvt"
+  tau_t: 100
+  temperature_k: 300
+  # control debugging plots (can be slow)
+  debug_structure: false
+  debug_diagnostics: true
+  include_movie: false
+  debug_animation: true   # save temperature_profile.mp4 (one line per frame)
+
+# GB specifications
+grain_boundaries:
+- sigma: -1

@@ -134,8 +134,11 @@ def process_traj(traj_path: Path, slab_thickness_ang: float, z_width_nm: float,
 
     print(f"  [traj] {traj_path.relative_to(RESULTS_DIR)}")
     traj_to_extxyz(traj_path, xyz_path)
-    data = analyze_gb(xyz_path)
-    plot_gb_crosssection(data, slab_thickness_ang, z_width_nm, slice_axis, png_path)
+    try:
+        data = analyze_gb(xyz_path)
+        plot_gb_crosssection(data, slab_thickness_ang, z_width_nm, slice_axis, png_path)
+    finally:
+        xyz_path.unlink(missing_ok=True)
 
 
 def iter_traj_files(config_name: str):
