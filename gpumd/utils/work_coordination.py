@@ -50,6 +50,42 @@ def resolve_results_base(config, gpumd_root):
     return (Path(gpumd_root) / "results").resolve()
 
 
+def resolve_config(config_arg, configs_dir):
+    """Resolve a config name/location into (config_dict, config_name, config_path).
+
+    ``config_arg`` may be given as a bare name (``full``), a path relative to
+    ``configs_dir`` (``bulk/long_300K`` or ``bulk/long_300K.yaml``), or an
+    absolute/relative path to a YAML file.  The ``.yaml`` suffix is optional.
+
+    ``config_name`` is the file stem (e.g. ``long_300K``), matching the results
+    subdirectory that generate_gbs.py writes to.  Raises FileNotFoundError if
+    no matching config file exists.
+    """
+    configs_dir = Path(configs_dir)
+    arg = Path(config_arg)
+
+    candidates = []
+    if arg.is_absolute():
+        candidates = [arg, arg.with_suffix(".yaml")]
+    else:
+        candidates = [
+            configs_dir / arg,
+            configs_dir / arg.with_suffix(".yaml"),
+            arg,
+            arg.with_suffix(".yaml"),
+        ]
+
+    for path in candidates:
+        if path.is_file():
+            with open(path) as f:
+                config = yaml.safe_load(f)
+            return config, path.stem, path
+
+    raise FileNotFoundError(
+        f"config '{config_arg}' not found (looked under {configs_dir})"
+    )
+
+
 def try_claim(claim_path, stale_hours=CLAIM_STALE_HOURS):
     """
     Atomically claim a work slot by creating a sentinel file.

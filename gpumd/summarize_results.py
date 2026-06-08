@@ -1,15 +1,20 @@
 """
 summarize_results.py
 
-Scans all configs under results/ and prints a table summary covering:
+Prints a table summary for a single config covering:
   1. GB generation — status, runs done vs target, n_atoms, cell dims, best energy
   2. rNEMD results — n_runs, convergence, κ and R_K (mean ± std, full range)
+
+The results base directory is taken from the config's ``results_dir`` key
+(falling back to gpumd/results), so this matches wherever generate_gbs.py
+wrote its output.
 
 Pass --convergence to also regenerate convergence plots for every rNEMD result.
 
 Usage:
-    python summarize_results.py
-    python summarize_results.py --convergence
+    python summarize_results.py <config>
+    python summarize_results.py full --convergence
+    python summarize_results.py bulk/long_300K.yaml
 """
 
 import argparse
@@ -18,27 +23,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import yaml
 from ase.io import read
 
 GPUMD_ROOT  = Path(__file__).resolve().parent
-RESULTS_DIR = GPUMD_ROOT / "results"
 CONFIGS_DIR = GPUMD_ROOT / "configs"
 
 sys.path.insert(0, str(GPUMD_ROOT))
-
-
-# ---------------------------------------------------------------------------
-# Config loading
-# ---------------------------------------------------------------------------
-
-def load_config(config_name):
-    """Return parsed YAML for config_name, or None if the file does not exist."""
-    path = CONFIGS_DIR / f"{config_name}.yaml"
-    if path.exists():
-        with open(path) as f:
-            return yaml.safe_load(f)
-    return None
+from utils.work_coordination import resolve_config, resolve_results_base
 
 
 # ---------------------------------------------------------------------------
@@ -252,12 +243,15 @@ def run_convergence(config_dir, config_name, config):
 
     from convergence_analysis import process_gb
 
+    results_base = resolve_results_base(config, GPUMD_ROOT)
+
     for gb_dir in sorted(rnemd_dir.iterdir()):
         if not gb_dir.is_dir():
             continue
         label = gb_dir.name
         print(f"    {label}...")
-        process_gb(label, config_name, GPUMD_ROOT, rnemd_cfg)
+        process_gb(label, config_name, GPUMD_ROOT, rnemd_cfg,
+                   results_base=results_base)
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +260,10 @@ def run_convergence(config_dir, config_name, config):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Print a summary of GB generation and rNEMD results for all configs"
+        description="Print a summary of GB generation and rNEMD results for one config"
+    )
+    parser.add_argument(
+        "config", help="Config name or location, e.g. 'full' or 'bulk/long_300K.yaml'.",
     )
     parser.add_argument(
         "--convergence", action="store_true",
@@ -274,52 +271,48 @@ def main():
     )
     args = parser.parse_args()
 
-    if not RESULTS_DIR.exists():
-        print(f"Results directory not found: {RESULTS_DIR}")
+    try:
+        config, config_name, cfg_path = resolve_config(args.config, CONFIGS_DIR)
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    config_dirs = sorted(
-        d for d in RESULTS_DIR.iterdir()
-        if d.is_dir() and (d / "gb_generation").exists()
-    )
+    results_base = resolve_results_base(config, GPUMD_ROOT)
+    config_dir   = results_base / config_name
 
-    if not config_dirs:
-        print("No results found.")
-        return
+    if not config_dir.exists():
+        print(f"No results found for '{config_name}' at {config_dir}")
+        sys.exit(1)
 
     sep = "=" * 80
 
-    for config_dir in config_dirs:
-        config_name = config_dir.name
-        config      = load_config(config_name)
+    print()
+    print(sep)
+    print(f"  Config: {config_name} ({cfg_path})")
+    print(f"  Results: {config_dir}")
+    print(sep)
 
-        print()
-        print(sep)
-        label_suffix = "" if config else "  [no YAML — run counts are inferred from files]"
-        print(f"  Config: {config_name}{label_suffix}")
-        print(sep)
+    # --- GB generation ---
+    print()
+    print("  GB Generation")
+    print("  " + "─" * 76)
+    gbgen_rows = read_gb_generation(config_dir, config)
+    print_gbgen_table(gbgen_rows)
 
-        # --- GB generation ---
+    # --- rNEMD ---
+    rnemd_rows = read_rnemd(config_dir)
+    if rnemd_rows:
         print()
-        print("  GB Generation")
+        print("  rNEMD Results")
         print("  " + "─" * 76)
-        gbgen_rows = read_gb_generation(config_dir, config)
-        print_gbgen_table(gbgen_rows)
+        print_rnemd_table(rnemd_rows)
 
-        # --- rNEMD ---
-        rnemd_rows = read_rnemd(config_dir)
-        if rnemd_rows:
-            print()
-            print("  rNEMD Results")
-            print("  " + "─" * 76)
-            print_rnemd_table(rnemd_rows)
-
-        # --- Convergence analysis ---
-        if args.convergence:
-            print()
-            print("  Convergence Analysis")
-            print("  " + "─" * 76)
-            run_convergence(config_dir, config_name, config)
+    # --- Convergence analysis ---
+    if args.convergence:
+        print()
+        print("  Convergence Analysis")
+        print("  " + "─" * 76)
+        run_convergence(config_dir, config_name, config)
 
     print()
 

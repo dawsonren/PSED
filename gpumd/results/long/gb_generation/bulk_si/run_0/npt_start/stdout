@@ -19,10 +19,10 @@ GPU information:
 
 number of GPUs = 1
 Device id:                   0
-    Device name:             NVIDIA A100-SXM4-80GB
-    Compute capability:      8.0
-    Amount of global memory: 79.2517 GB
-    Number of SMs:           108
+    Device name:             NVIDIA H100 80GB HBM3
+    Compute capability:      9.0
+    Amount of global memory: 79.1896 GB
+    Number of SMs:           132
 
 ---------------------------------------------------------------
 Started running GPUMD.
@@ -33,22 +33,22 @@ Started running GPUMD.
 Started initializing positions and related parameters.
 ---------------------------------------------------------------
 
-Number of atoms is 73600.
+Number of atoms is 110400.
 Use periodic boundary conditions along x.
 Use periodic boundary conditions along y.
 Use periodic boundary conditions along z.
 Box matrix h = [a, b, c] is
     2.7218511865e+01    0.0000000000e+00    0.0000000000e+00
     0.0000000000e+00    2.7218511865e+01    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    2.0032824732e+03
+    0.0000000000e+00    0.0000000000e+00    3.0049237099e+03
 Inverse box matrix g = inv(h) is
     3.6739701457e-02    0.0000000000e+00    0.0000000000e+00
     0.0000000000e+00    3.6739701457e-02    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    4.9918072631e-04
+    0.0000000000e+00    0.0000000000e+00    3.3278715087e-04
 Do not specify initial velocities here.
 Have no grouping method.
 There is only one atom type.
-    73600 atoms of type 0.
+    110400 atoms of type 0.
 Initialized velocities with default T = 300 K.
 
 ---------------------------------------------------------------
@@ -60,24 +60,8 @@ Finished initializing positions and related parameters.
 Started executing the commands in run.in.
 ---------------------------------------------------------------
 
-Use the NEP3 potential with 1 atom type.
-    type 0 (Si with Z = 14).
-    radial cutoff = 5 A.
-    angular cutoff = 5 A.
-    MN_radial = 53.
-    enlarged MN_radial = 67.
-    enlarged MN_angular = 67.
-    n_max_radial = 10.
-    n_max_angular = 10.
-    basis_size_radial = 10.
-    basis_size_angular = 10.
-    l_max_3body = 4.
-    l_max_4body = 2.
-    l_max_5body = 1.
-    ANN = 77-50-1.
-    number of neural network parameters = 3951.
-    number of descriptor parameters = 242.
-    total number of parameters = 4193.
+Use Tersoff-mini (1-element) potential with element(s):
+ Si
 Initialized velocities with input T = 10 K.
 Time step for this run is 1 fs.
 Use NPT ensemble for this run.
@@ -104,8 +88,8 @@ Run 100000 steps.
     100000 steps completed.
 
 ---------------------------------------------------------------
-Time used for this run = 793.809 second.
-Speed of this run = 9.27176e+06 atom*step/second.
+Time used for this run = 42.7245 second.
+Speed of this run = 2.584e+08 atom*step/second.
 ---------------------------------------------------------------
 
 
@@ -115,7 +99,7 @@ Finished executing the commands in run.in.
 
 
 ---------------------------------------------------------------
-Time used = 794.026637 s.
+Time used = 42.902999 s.
 ---------------------------------------------------------------
 
 

@@ -73,6 +73,19 @@ rnemd:
   include_movie: false
   debug_animation: true   # save temperature_profile.mp4 (one line per frame)
 
+# ML dataset parameters (format_cleaned_data.py)
+ml:
+  # atom subsets: descriptors computed for all atoms plus atoms within each
+  # of these distances (Å) of a GB plane
+  gb_dist_thresholds: [10.0]
+  # structural descriptor settings
+  bond_cutoff: 3.0          # Å, first-shell cutoff for Si bonds/angles/dihedrals
+  rdf_cutoff: 10.0          # Å, RDF integration range
+  rdf_nbins: 200
+  dihedral_nbins: 36
+  # GB-energy relaxation (CPUNEP + LBFGS) force convergence [eV/Å]
+  relax_fmax: 0.01
+
 # GB specifications
 grain_boundaries:
 - axis: [1, 0, 0]

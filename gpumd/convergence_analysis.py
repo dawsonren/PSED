@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 from ase.io import read
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from utils.work_coordination import gb_label
+from utils.work_coordination import gb_label, resolve_results_base
 
 M_SI_AMU = 28.085  # Si atomic mass in amu
 
@@ -213,8 +213,10 @@ def plot_convergence_instantaneous(all_kappas, all_R_Ks, run_labels, gb_label_st
         print(f"  Saved: {out_path}")
 
 
-def process_gb(gb_label_str, config_name, gpumd_root, rnemd_cfg, cumulative=True):
-    rnemd_dir = gpumd_root / "results" / config_name / "rnemd" / gb_label_str
+def process_gb(gb_label_str, config_name, gpumd_root, rnemd_cfg, cumulative=True,
+               results_base=None):
+    base = Path(results_base) if results_base is not None else gpumd_root / "results"
+    rnemd_dir = base / config_name / "rnemd" / gb_label_str
     if not rnemd_dir.exists():
         print(f"  No rNEMD results found for {gb_label_str}, skipping.")
         return
@@ -288,8 +290,9 @@ def main():
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    config_name = config_path.stem
-    gpumd_root  = Path(__file__).resolve().parent
+    config_name  = config_path.stem
+    gpumd_root   = Path(__file__).resolve().parent
+    results_base = resolve_results_base(config, gpumd_root)
 
     _raw_gbs   = config["grain_boundaries"]
     no_gb_mode = len(_raw_gbs) == 1 and _raw_gbs[0].get("sigma") == -1
@@ -307,7 +310,7 @@ def main():
     for label in gb_labels:
         print(f"\nProcessing {label}...")
         process_gb(label, config_name, gpumd_root, config["rnemd"],
-                   cumulative=args.cumulative)
+                   cumulative=args.cumulative, results_base=results_base)
 
 
 if __name__ == "__main__":

@@ -11,8 +11,12 @@ arrays, recomputes kappa/R_K/J identically to run_rnemd.py, and overwrites
 summary.csv + aggregate.csv with the full set of results.
 
 Usage:
-    python recalculate_summary.py --config ../configs/full.yaml
-    python recalculate_summary.py --config ../configs/full.yaml --gb 110_sigma27_-552
+    python recalculate_summary.py --config full
+    python recalculate_summary.py --config full --gb 110_sigma27_-552
+
+The results base directory is taken from the config's ``results_dir`` key
+(falling back to ``<gpumd_root>/results``), so configs that write to separate
+storage (e.g. full.yaml -> /projects/...) are resolved correctly.
 """
 
 import os
@@ -21,13 +25,13 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from ase.io import read
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.rnemd_stats import check_steady_state, aggregate_run_results
+from utils.work_coordination import resolve_config, resolve_results_base
 
 # ---------------------------------------------------------------------------
 # CLI and config
@@ -36,17 +40,18 @@ from utils.rnemd_stats import check_steady_state, aggregate_run_results
 parser = argparse.ArgumentParser(
     description="Rebuild rNEMD summary.csv / aggregate.csv from raw run data"
 )
-parser.add_argument("--config", required=True, help="Path to unified YAML config")
+parser.add_argument(
+    "--config", required=True,
+    help="Config name or path (e.g. full, or ../configs/full.yaml)"
+)
 parser.add_argument("--gb", default=None, help="Restrict to a specific GB label")
 args = parser.parse_args()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 GPUMD_ROOT = SCRIPT_DIR.parent
+CONFIGS_DIR = GPUMD_ROOT / "configs"
 
-with open(args.config) as f:
-    config = yaml.safe_load(f)
-
-CONFIG_NAME = Path(args.config).stem
+config, CONFIG_NAME, _ = resolve_config(args.config, CONFIGS_DIR)
 
 rnemd_cfg        = config["rnemd"]
 NBINS            = int(rnemd_cfg["nbins"])
@@ -58,7 +63,7 @@ N_CYCLES         = int(rnemd_cfg["n_cycles"])
 BULK_SI_LABEL    = "bulk_si"
 M_SI_AMU         = 28.085
 
-RNEMD_RESULTS_DIR = str(GPUMD_ROOT / "results" / CONFIG_NAME / "rnemd")
+RNEMD_RESULTS_DIR = str(resolve_results_base(config, GPUMD_ROOT) / CONFIG_NAME / "rnemd")
 
 # ---------------------------------------------------------------------------
 # Physics — copied verbatim from run_rnemd.py (uses the globals above)

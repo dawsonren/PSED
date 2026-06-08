@@ -1,15 +1,20 @@
 """
 visualize_ovito.py  -  Render GB cross-section PNGs from structure.traj files.
 
-Scans results/<config>/gb_generation/<gb>/run_*/structure.traj, runs OVITO's
-PTM modifier to isolate GB atoms, and writes a cross-section PNG next to each
-traj file. The GB is assumed to sit at z = L_z/2.
+Scans <results_dir>/<config>/gb_generation/<gb>/run_*/structure.traj, runs
+OVITO's PTM modifier to isolate GB atoms, and writes a cross-section PNG next
+to each traj file. The GB is assumed to sit at z = L_z/2.
+
+The results base directory is taken from the config's ``results_dir`` key
+(falling back to gpumd/results), so this matches wherever generate_gbs.py
+wrote its output.
 
 Usage:
     python visualize_ovito.py <config> [--slab-thickness ANG] [--z-width NM] [--axis {x,y}]
 
 Example:
-    python visualize_ovito.py tersoff_test --slab-thickness 5 --z-width 4 --axis y
+    python visualize_ovito.py full --slab-thickness 5 --z-width 4 --axis y
+    python visualize_ovito.py bulk/long_300K.yaml
 """
 
 import argparse
@@ -20,8 +25,13 @@ import numpy as np
 from ase.io import read, write
 
 GPUMD_ROOT  = Path(__file__).resolve().parent
-RESULTS_DIR = GPUMD_ROOT / "results"
 CONFIGS_DIR = GPUMD_ROOT / "configs"
+
+sys.path.insert(0, str(GPUMD_ROOT))
+from utils.work_coordination import resolve_config, resolve_results_base
+
+# Set in main() once the config is resolved; used for display paths.
+RESULTS_DIR = GPUMD_ROOT / "results"
 
 
 def traj_to_extxyz(traj_path: Path, out_path: Path, frame: int = -1):
@@ -184,9 +194,9 @@ def iter_traj_files(config_name: str):
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Render GB cross-section PNGs from structure.traj files under results/<config>/gb_generation/.",
+        description="Render GB cross-section PNGs from structure.traj files under <results_dir>/<config>/gb_generation/.",
     )
-    p.add_argument("config", help="Config name (file under configs/, without .yaml).")
+    p.add_argument("config", help="Config name or location, e.g. 'full' or 'bulk/long_300K.yaml'.")
     p.add_argument("--slab-thickness", type=float, default=10.0, dest="slab_thickness",
                    help="Slab thickness in Å along the slice axis (default: 10.0).")
     p.add_argument("--z-width", type=float, default=10.0, dest="z_width",
@@ -197,17 +207,22 @@ def parse_args():
 
 
 def main():
+    global RESULTS_DIR
     args = parse_args()
 
-    cfg_path = CONFIGS_DIR / f"{args.config}.yaml"
-    if not cfg_path.exists():
-        print(f"error: config not found at {cfg_path}", file=sys.stderr)
+    try:
+        config, config_name, cfg_path = resolve_config(args.config, CONFIGS_DIR)
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"visualize_ovito: config={args.config}  axis={args.axis}  "
-          f"slab={args.slab_thickness} Å  z-window={args.z_width} nm")
+    RESULTS_DIR = resolve_results_base(config, GPUMD_ROOT)
 
-    for traj_path in iter_traj_files(args.config):
+    print(f"visualize_ovito: config={config_name} ({cfg_path})  axis={args.axis}  "
+          f"slab={args.slab_thickness} Å  z-window={args.z_width} nm")
+    print(f"  results base: {RESULTS_DIR}")
+
+    for traj_path in iter_traj_files(config_name):
         try:
             process_traj(traj_path, args.slab_thickness, args.z_width, args.axis)
         except Exception as e:
