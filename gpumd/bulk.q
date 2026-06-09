@@ -27,13 +27,13 @@ cd gpumd
 PYTHON=/home/djr2473/.conda/envs/chem/bin/python
 
 echo "Running bulk estimation..."
-$PYTHON gb_generation/generate_gbs.py --config configs/bulk/wide.yaml
-$PYTHON gb_generation/generate_gbs.py --config configs/bulk/wider.yaml
-$PYTHON gb_generation/generate_gbs.py --config configs/bulk/medium.yaml
-$PYTHON gb_generation/generate_gbs.py --config configs/bulk/medium_long.yaml
+# $PYTHON gb_generation/generate_gbs.py --config configs/bulk/wide.yaml
+# $PYTHON gb_generation/generate_gbs.py --config configs/bulk/wider.yaml
+# $PYTHON gb_generation/generate_gbs.py --config configs/bulk/medium.yaml
+# $PYTHON gb_generation/generate_gbs.py --config configs/bulk/medium_long.yaml
 $PYTHON gb_generation/generate_gbs.py --config configs/bulk/long.yaml
-$PYTHON thermo/run_rnemd.py --config configs/bulk/wide.yaml
-$PYTHON thermo/run_rnemd.py --config configs/bulk/wider.yaml
-$PYTHON thermo/run_rnemd.py --config configs/bulk/medium.yaml
-$PYTHON thermo/run_rnemd.py --config configs/bulk/medium_long.yaml
+# $PYTHON thermo/run_rnemd.py --config configs/bulk/wide.yaml
+# $PYTHON thermo/run_rnemd.py --config configs/bulk/wider.yaml
+# $PYTHON thermo/run_rnemd.py --config configs/bulk/medium.yaml
+# $PYTHON thermo/run_rnemd.py --config configs/bulk/medium_long.yaml
 $PYTHON thermo/run_rnemd.py --config configs/bulk/long.yaml

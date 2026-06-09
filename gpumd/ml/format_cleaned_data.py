@@ -49,6 +49,7 @@ from ase.io import read
 
 from utils.descriptors import (
     compute_global_descriptors,
+    coordination_descriptors,
     identify_gb_atoms,
 )
 from utils.gb_geometry import compute_gb_geometry
@@ -227,6 +228,14 @@ for axis, sigma, plane, label in gb_entries:
         row[f"{prefix}_A_RDF"]       = desc["A_RDF"]
         row[f"{prefix}_rho"]         = desc["rho"]
         row[f"{prefix}_n_atoms"]     = desc["n_atoms_used"]
+
+        # Coordination-defect statistics (under/over-coordinated Si in the
+        # subset) -- a strong TBR predictor; see ml_pipeline.ipynb section 11.
+        coord = coordination_descriptors(atoms, bond_cutoff=BOND_CUTOFF, mask=mask)
+        row[f"{prefix}_coord_under"] = coord["coord_under"]
+        row[f"{prefix}_coord_over"]  = coord["coord_over"]
+        row[f"{prefix}_coord_mean"]  = coord["coord_mean"]
+        row[f"{prefix}_coord_std"]   = coord["coord_std"]
 
     # --- GB energy (relax supercell with CPUNEP + LBFGS, then compute γ) ---
     if e_bulk is not None:

@@ -60,8 +60,24 @@ Finished initializing positions and related parameters.
 Started executing the commands in run.in.
 ---------------------------------------------------------------
 
-Use Tersoff-mini (1-element) potential with element(s):
- Si
+Use the NEP3 potential with 1 atom type.
+    type 0 (Si with Z = 14).
+    radial cutoff = 5 A.
+    angular cutoff = 5 A.
+    MN_radial = 53.
+    enlarged MN_radial = 67.
+    enlarged MN_angular = 67.
+    n_max_radial = 10.
+    n_max_angular = 10.
+    basis_size_radial = 10.
+    basis_size_angular = 10.
+    l_max_3body = 4.
+    l_max_4body = 2.
+    l_max_5body = 1.
+    ANN = 77-50-1.
+    number of neural network parameters = 3951.
+    number of descriptor parameters = 242.
+    total number of parameters = 4193.
 Initialized velocities with input T = 10 K.
 Time step for this run is 1 fs.
 Use NPT ensemble for this run.
@@ -81,29 +97,3 @@ Run 100000 steps.
     30000 steps completed.
     40000 steps completed.
     50000 steps completed.
-    60000 steps completed.
-    70000 steps completed.
-    80000 steps completed.
-    90000 steps completed.
-    100000 steps completed.
-
----------------------------------------------------------------
-Time used for this run = 35.0435 second.
-Speed of this run = 2.10025e+08 atom*step/second.
----------------------------------------------------------------
-
-
----------------------------------------------------------------
-Finished executing the commands in run.in.
----------------------------------------------------------------
-
-
----------------------------------------------------------------
-Time used = 35.109313 s.
----------------------------------------------------------------
-
-
----------------------------------------------------------------
-Finished running GPUMD.
----------------------------------------------------------------
-

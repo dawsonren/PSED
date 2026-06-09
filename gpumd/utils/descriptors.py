@@ -265,3 +265,58 @@ def compute_mean_soap(
         return all_soaps[mask].mean(axis=0)
 
     return all_soaps.mean(axis=0)
+
+
+# ---------------------------------------------------------------------------
+# Coordination-defect descriptors
+# ---------------------------------------------------------------------------
+
+def coordination_descriptors(
+    atoms: Atoms,
+    bond_cutoff: float = 3.0,
+    ideal_coord: int = 4,
+    mask=None,
+) -> dict:
+    """
+    Coordination-defect statistics over an atom subset.
+
+    For tetrahedral Si the ideal coordination number is 4; under- and
+    over-coordinated atoms mark broken/strained bonding at the grain boundary
+    and turn out to be a strong predictor of the thermal boundary resistance.
+
+    Parameters
+    ----------
+    atoms : ASE Atoms
+    bond_cutoff : float
+        Neighbor cutoff in Å (same first-shell cutoff used for the other
+        descriptors; ~3.0 Å sits between the 1st and 2nd Si-Si shells).
+    ideal_coord : int
+        Reference coordination number (4 for diamond-cubic Si).
+    mask : array-like of bool, optional
+        Restrict the statistics to this atom subset (e.g. the GB slab).
+
+    Returns
+    -------
+    dict with keys: coord_under, coord_over, coord_mean, coord_std
+        coord_under / coord_over are the fractions of subset atoms with
+        coordination below / above `ideal_coord`.
+    """
+    n = len(atoms)
+    # 'i' returns the source index of every neighbor pair (full list), so a
+    # bincount over it is exactly the per-atom coordination number. O(N).
+    i_arr = neighbor_list('i', atoms, bond_cutoff)
+    coord = np.bincount(i_arr, minlength=n)
+
+    if mask is not None:
+        coord = coord[np.asarray(mask, dtype=bool)]
+
+    if len(coord) == 0:
+        return {"coord_under": 0.0, "coord_over": 0.0,
+                "coord_mean": 0.0, "coord_std": 0.0}
+
+    return {
+        "coord_under": float(np.mean(coord < ideal_coord)),
+        "coord_over":  float(np.mean(coord > ideal_coord)),
+        "coord_mean":  float(np.mean(coord)),
+        "coord_std":   float(np.std(coord)),
+    }
