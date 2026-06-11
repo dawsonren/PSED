@@ -19,10 +19,10 @@ GPU information:
 
 number of GPUs = 1
 Device id:                   0
-    Device name:             NVIDIA A100-PCIE-40GB
-    Compute capability:      8.0
-    Amount of global memory: 39.4945 GB
-    Number of SMs:           108
+    Device name:             NVIDIA H100 80GB HBM3
+    Compute capability:      9.0
+    Amount of global memory: 79.1896 GB
+    Number of SMs:           132
 
 ---------------------------------------------------------------
 Started running GPUMD.
@@ -38,13 +38,13 @@ Use periodic boundary conditions along x.
 Use periodic boundary conditions along y.
 Use periodic boundary conditions along z.
 Box matrix h = [a, b, c] is
-    2.7387981000e+01    0.0000000000e+00    0.0000000000e+00
-    0.0000000000e+00    2.7387981000e+01    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    3.0236331000e+03
+    2.7387985000e+01    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    2.7387985000e+01    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    3.0236335000e+03
 Inverse box matrix g = inv(h) is
-    3.6512366501e-02    0.0000000000e+00    0.0000000000e+00
-    0.0000000000e+00    3.6512366501e-02    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    3.3072795770e-04
+    3.6512361169e-02    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.6512361169e-02    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    3.3072791395e-04
 Do not specify initial velocities here.
 Have no grouping method.
 There is only one atom type.
@@ -104,8 +104,8 @@ Run 50000 steps.
     50000 steps completed.
 
 ---------------------------------------------------------------
-Time used for this run = 604.697 second.
-Speed of this run = 9.12854e+06 atom*step/second.
+Time used for this run = 337.232 second.
+Speed of this run = 1.63685e+07 atom*step/second.
 ---------------------------------------------------------------
 
 
@@ -115,7 +115,7 @@ Finished executing the commands in run.in.
 
 
 ---------------------------------------------------------------
-Time used = 604.909865 s.
+Time used = 337.390457 s.
 ---------------------------------------------------------------
 
 

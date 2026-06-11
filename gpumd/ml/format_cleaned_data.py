@@ -50,6 +50,7 @@ from ase.io import read
 from utils.descriptors import (
     compute_global_descriptors,
     coordination_descriptors,
+    steinhardt_descriptors,
     identify_gb_atoms,
 )
 from utils.gb_geometry import compute_gb_geometry
@@ -236,6 +237,13 @@ for axis, sigma, plane, label in gb_entries:
         row[f"{prefix}_coord_over"]  = coord["coord_over"]
         row[f"{prefix}_coord_mean"]  = coord["coord_mean"]
         row[f"{prefix}_coord_std"]   = coord["coord_std"]
+
+        # Steinhardt bond-orientational order (q4, q6) over the subset -- the
+        # strongest TBR predictor found so far; see ml_pipeline.ipynb sec 11b.
+        bo = steinhardt_descriptors(atoms, bond_cutoff=BOND_CUTOFF, ls=(4, 6), mask=mask)
+        for _l in (4, 6):
+            row[f"{prefix}_q{_l}_mean"] = bo[f"q{_l}_mean"]
+            row[f"{prefix}_q{_l}_std"]  = bo[f"q{_l}_std"]
 
     # --- GB energy (relax supercell with CPUNEP + LBFGS, then compute γ) ---
     if e_bulk is not None:

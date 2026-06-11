@@ -55,7 +55,7 @@ rnemd:
   timestep_fs: 2
   n_warmup_cycles: 400          # warmup cycles to build gradient before recording data
   n_cycles: 800                 # number of production cycles (velocity swaps after each)
-  steps_per_cycle: 1000         # controls the frequency of velocity swaps
+  steps_per_cycle: 2000         # controls the frequency of velocity swaps
   # control replications
   n_runs: 5                 # independent rNEMD simulations per structure (for uncertainty)
   # control simulation parameters

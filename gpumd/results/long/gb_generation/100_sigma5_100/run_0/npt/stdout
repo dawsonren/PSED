@@ -33,22 +33,22 @@ Started running GPUMD.
 Started initializing positions and related parameters.
 ---------------------------------------------------------------
 
-Number of atoms is 110400.
+Number of atoms is 176640.
 Use periodic boundary conditions along x.
 Use periodic boundary conditions along y.
 Use periodic boundary conditions along z.
 Box matrix h = [a, b, c] is
-    2.7387985000e+01    0.0000000000e+00    0.0000000000e+00
-    0.0000000000e+00    2.7387985000e+01    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    3.0236335000e+03
+    3.4641602000e+01    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    3.4641602000e+01    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    3.0234796000e+03
 Inverse box matrix g = inv(h) is
-    3.6512361169e-02    0.0000000000e+00    0.0000000000e+00
-    0.0000000000e+00    3.6512361169e-02    0.0000000000e+00
-    0.0000000000e+00    0.0000000000e+00    3.3072791395e-04
+    2.8867025261e-02    0.0000000000e+00    0.0000000000e+00
+    0.0000000000e+00    2.8867025261e-02    0.0000000000e+00
+    0.0000000000e+00    0.0000000000e+00    3.3074474853e-04
 Do not specify initial velocities here.
 Have no grouping method.
 There is only one atom type.
-    110400 atoms of type 0.
+    176640 atoms of type 0.
 Initialized velocities with default T = 300 K.
 
 ---------------------------------------------------------------
@@ -80,11 +80,14 @@ Use the NEP3 potential with 1 atom type.
     total number of parameters = 4193.
 Initialized velocities with input T = 675 K.
 Time step for this run is 1 fs.
-Use NVT ensemble for this run.
-    choose the Nose-Hoover chain method.
+Use NPT ensemble for this run.
+    choose the SCR method.
     initial temperature is 675 K.
     final temperature is 675 K.
     tau_T is 100 time_step.
+    isotropic pressure is 0 GPa.
+    bulk modulus is 100 GPa.
+    tau_p is 1000 time_step.
 Dump thermo every 500 steps.
 Dump position.
     every 49999 steps.
@@ -101,8 +104,8 @@ Run 50000 steps.
     50000 steps completed.
 
 ---------------------------------------------------------------
-Time used for this run = 339.211 second.
-Speed of this run = 1.6273e+07 atom*step/second.
+Time used for this run = 511.167 second.
+Speed of this run = 1.72781e+07 atom*step/second.
 ---------------------------------------------------------------
 
 
@@ -112,7 +115,7 @@ Finished executing the commands in run.in.
 
 
 ---------------------------------------------------------------
-Time used = 339.350397 s.
+Time used = 511.376438 s.
 ---------------------------------------------------------------
 
 

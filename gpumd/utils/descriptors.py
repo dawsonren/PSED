@@ -320,3 +320,193 @@ def coordination_descriptors(
         "coord_mean":  float(np.mean(coord)),
         "coord_std":   float(np.std(coord)),
     }
+
+
+# ---------------------------------------------------------------------------
+# Steinhardt bond-orientational order parameters
+# ---------------------------------------------------------------------------
+
+def _sph_harm(l, m, theta_polar, phi_azim):
+    """Y_l^m on polar/azimuthal angle arrays, across scipy versions.
+
+    scipy >=1.15 exposes ``sph_harm_y(n, m, theta, phi)`` with theta the polar
+    (colatitude) angle and phi the azimuth; older scipy uses the removed
+    ``sph_harm(m, n, theta_azim, phi_polar)`` with the argument order flipped.
+    """
+    from scipy import special
+    if hasattr(special, "sph_harm_y"):
+        return special.sph_harm_y(l, m, theta_polar, phi_azim)
+    return special.sph_harm(m, l, phi_azim, theta_polar)  # legacy arg order
+
+
+def _steinhardt_qlm(atoms: Atoms, bond_cutoff: float, ls):
+    """Per-atom complex q_lm vectors, the shared core of q_l and w_l.
+
+    Returns ``(qlm, valid)`` where ``qlm[l]`` is a complex array of shape
+    (N, 2l+1) holding q_lm(i) = (1/N_b) Σ_j Y_l^m(r_ij) for each atom (rows for
+    atoms with no neighbour are left zero), and ``valid`` is the length-N boolean
+    mask of atoms that have at least one neighbour inside the cutoff.
+    """
+    n = len(atoms)
+    i_arr, _, D_arr = neighbor_list("ijD", atoms, bond_cutoff)
+    qlm = {l: np.zeros((n, 2 * l + 1), dtype=complex) for l in ls}
+    if i_arr.size == 0:
+        return qlm, np.zeros(n, dtype=bool)
+
+    nbr_count = np.bincount(i_arr, minlength=n).astype(float)
+    valid = nbr_count > 0
+
+    r = np.linalg.norm(D_arr, axis=1)
+    theta_polar = np.arccos(np.clip(D_arr[:, 2] / r, -1.0, 1.0))
+    phi_azim = np.arctan2(D_arr[:, 1], D_arr[:, 0]) % (2.0 * np.pi)
+
+    for l in ls:
+        for col, m in enumerate(range(-l, l + 1)):
+            np.add.at(qlm[l][:, col], i_arr, _sph_harm(l, m, theta_polar, phi_azim))
+        qlm[l][valid] /= nbr_count[valid, None]
+    return qlm, valid
+
+
+def steinhardt_per_atom(
+    atoms: Atoms,
+    bond_cutoff: float = 3.0,
+    ls=(4, 6),
+) -> dict:
+    """
+    Per-atom local Steinhardt bond-orientational order parameters q_l.
+
+    For each atom i with first-shell neighbours j (within ``bond_cutoff``),
+
+        q_lm(i) = (1/N_b) Σ_j Y_l^m(r_ij),
+        q_l(i)  = sqrt( 4π/(2l+1) · Σ_m |q_lm(i)|² ).
+
+    Returns
+    -------
+    dict mapping each l in ``ls`` to a length-N float array of q_l, with NaN for
+    atoms that have no neighbour inside the cutoff. Aggregating these over an
+    atom subset (mask) and/or several slab widths is left to the caller; see
+    ``steinhardt_descriptors`` for the standard mean/std reduction.
+    """
+    n = len(atoms)
+    qlm, valid = _steinhardt_qlm(atoms, bond_cutoff, ls)
+    per_atom = {l: np.full(n, np.nan) for l in ls}
+    for l in ls:
+        per_atom[l][valid] = np.sqrt(
+            4.0 * np.pi / (2 * l + 1) * np.sum(np.abs(qlm[l][valid]) ** 2, axis=1)
+        )
+    return per_atom
+
+
+# Cache of nonzero Wigner-3j coefficients (l l l; m1 m2 m3), m1+m2+m3=0, keyed by l.
+_W3J_CACHE: dict = {}
+
+
+def _wigner3j_table(l):
+    """List of (i1, i2, i3, coeff) with m-indices shifted to 0..2l, cached per l."""
+    if l not in _W3J_CACHE:
+        from sympy.physics.wigner import wigner_3j
+        tab = []
+        for m1 in range(-l, l + 1):
+            for m2 in range(-l, l + 1):
+                m3 = -(m1 + m2)
+                if -l <= m3 <= l:
+                    c = float(wigner_3j(l, l, l, m1, m2, m3))
+                    if c != 0.0:
+                        tab.append((m1 + l, m2 + l, m3 + l, c))
+        _W3J_CACHE[l] = tab
+    return _W3J_CACHE[l]
+
+
+def steinhardt_w_descriptors(
+    atoms: Atoms,
+    bond_cutoff: float = 3.0,
+    ls=(4, 6),
+    mask=None,
+) -> dict:
+    """
+    Normalised third-order Steinhardt invariants ŵ_l, averaged over an atom
+    subset.
+
+        w_l(i)  = Σ_{m1+m2+m3=0} (l l l; m1 m2 m3) q_lm1 q_lm2 q_lm3,
+        ŵ_l(i)  = Re w_l(i) / ( Σ_m |q_lm(i)|² )^{3/2}.
+
+    ŵ_l is a dimensionless, rotation-invariant fingerprint of the local bonding
+    *shape* (perfect diamond-cubic Si: ŵ_4 ≈ -0.159, ŵ_6 ≈ +0.013). It carries
+    similar information to q_l for this system; see ml_pipeline.ipynb section 11c.
+    Requires ``sympy`` for the Wigner-3j symbols.
+
+    Returns
+    -------
+    dict with keys ``w{l}_mean`` and ``w{l}_std`` for each l in ``ls``.
+    """
+    n = len(atoms)
+    qlm, valid = _steinhardt_qlm(atoms, bond_cutoff, ls)
+    sub = np.ones(n, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
+
+    out = {}
+    for l in ls:
+        w = np.zeros(n, dtype=complex)
+        q = qlm[l]
+        for i1, i2, i3, c in _wigner3j_table(l):
+            w += c * q[:, i1] * q[:, i2] * q[:, i3]
+        s = np.sum(np.abs(q) ** 2, axis=1)
+        good = valid & (s > 1e-12)
+        what = np.full(n, np.nan)
+        what[good] = np.real(w[good]) / s[good] ** 1.5
+
+        w_sub = what[sub]
+        w_sub = w_sub[np.isfinite(w_sub)]
+        if w_sub.size:
+            out[f"w{l}_mean"] = float(np.mean(w_sub))
+            out[f"w{l}_std"] = float(np.std(w_sub))
+        else:
+            out[f"w{l}_mean"] = 0.0
+            out[f"w{l}_std"] = 0.0
+    return out
+
+
+def steinhardt_descriptors(
+    atoms: Atoms,
+    bond_cutoff: float = 3.0,
+    ls=(4, 6),
+    mask=None,
+) -> dict:
+    """
+    Local Steinhardt bond-orientational order parameters q_l, averaged over an
+    atom subset.
+
+    Perfect diamond-cubic (tetrahedral) Si gives q_4 ≈ 0.509, q_6 ≈ 0.629; the
+    disordered/strained bonding at a grain boundary pulls these away from the
+    ideal values, so the mean and spread of q_4, q_6 over the GB slab are a
+    sharper local-order signal than the under/over-coordination counts.
+
+    Parameters
+    ----------
+    atoms : ASE Atoms
+    bond_cutoff : float
+        First-shell neighbour cutoff in Å (same 3.0 Å as the other descriptors).
+    ls : iterable of int
+        Steinhardt degrees to compute (default q_4 and q_6).
+    mask : array-like of bool, optional
+        Restrict the mean/std to this atom subset (e.g. the GB slab). q_l is
+        still built from *every* neighbour of each masked atom.
+
+    Returns
+    -------
+    dict with keys ``q{l}_mean`` and ``q{l}_std`` for each l in ``ls``.
+    """
+    n = len(atoms)
+    per_atom = steinhardt_per_atom(atoms, bond_cutoff=bond_cutoff, ls=ls)
+    sub = np.ones(n, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
+
+    out = {}
+    for l in ls:
+        q_sub = per_atom[l][sub]
+        q_sub = q_sub[np.isfinite(q_sub)]
+        if q_sub.size:
+            out[f"q{l}_mean"] = float(np.mean(q_sub))
+            out[f"q{l}_std"] = float(np.std(q_sub))
+        else:
+            out[f"q{l}_mean"] = 0.0
+            out[f"q{l}_std"] = 0.0
+    return out
